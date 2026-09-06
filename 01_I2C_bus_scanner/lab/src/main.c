@@ -1,23 +1,23 @@
 /*
- * I2C Bus Scanner (Zephyr, ESP32-S3)
+ * I2C Bus Scanner (Zephyr, Synaptics SR110 / sr100_rdk/sr100/m55)
  *
  * Runs a one-shot scan of I2C0 in a dedicated thread at boot and
  * prints an `i2cdetect`-style grid. Useful for checking what address
  * a newly-attached sensor or display module shows up at.
  *
- * Probe method: a ZERO-LENGTH i2c_write() per address, matching the
- * official Zephyr `samples/drivers/i2c/i2c_scanner` sample. A
- * zero-length write only tests whether the target ACKs its own
- * address byte - it makes no assumption about the device's internal
- * register/read-pointer state, which is what makes it reliable across
- * many different device types.
+ * Probe method: a 1-BYTE i2c_read() per address - the OPPOSITE choice
+ * from the original ESP32-S3 version of this lab.
  *
- * NOTE: an earlier version of this scanner probed with a 1-byte
- * i2c_read() instead. That approach intermittently missed real
- * devices on this SoC family - Zephyr issue #45008 ("esp32: i2c_read()
- * error was returned successfully at the bus nack") documents that
- * i2c_read()'s NACK detection is not fully reliable on ESP32's I2C
- * driver. Zero-length write avoids relying on that path entirely.
+ * The ESP32-S3 version deliberately used a zero-length i2c_write()
+ * instead, to work around Zephyr issue #45008 ("esp32: i2c_read()
+ * error was returned successfully at the bus nack") on ESP32's I2C
+ * driver. On SR110's snps,designware-i2c driver the situation is
+ * reversed and confirmed on real hardware: a zero-length (or 1-byte
+ * dummy) i2c_write() probe fails to detect devices that are genuinely
+ * present on the bus, while i2c_read() correctly reports NACKs and
+ * finds them. If you port this scanner to yet another SoC, re-verify
+ * which probe style actually works there - don't assume either one
+ * transfers over.
  */
 
 #include <zephyr/kernel.h>
@@ -34,10 +34,13 @@
 #define SCAN_THREAD_STACK_SIZE 2048
 #define SCAN_THREAD_PRIORITY   5
 
-/* Probe a single 7-bit address with a zero-length write. */
+/* Probe a single 7-bit address with a 1-byte read (confirmed reliable
+ * on this platform's I2C driver - see the file header comment).
+ */
 static bool i2c_probe_addr(const struct device *bus, uint8_t addr)
 {
-	int ret = i2c_write(bus, NULL, 0, addr);
+	uint8_t dummy;
+	int ret = i2c_read(bus, &dummy, 1, addr);
 
 	return (ret == 0);
 }
@@ -88,7 +91,7 @@ static void scan_thread_entry(void *p1, void *p2, void *p3)
 
 	const struct device *i2c0 = DEVICE_DT_GET(I2C0_NODE);
 
-	printk("\n=== I2C Bus Scanner (ESP32-S3) ===\n");
+	printk("\n=== I2C Bus Scanner (SR110) ===\n");
 	scan_bus(i2c0, "I2C0");
 
 	/* If you've also enabled a second I2C controller in your overlay,

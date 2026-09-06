@@ -1,0 +1,83 @@
+/*
+ * Synaptics SR110 (sr100_rdk/sr100/m55): SPI0 bus-level loopback self-test.
+ *
+ * SPI PERIPHERAL CHOICE: the SR100 series exposes only one SPI controller
+ * that can act as a bus *master* - spi0. spi1 exists but is wired as a
+ * slave-only peripheral (see sr100_m55.dtsi - the spi1 node is commented
+ * as slave-only in the SDK source), so it cannot originate a transfer
+ * and cannot host this test.
+ *
+ * NO SOFTWARE LOOPBACK TRICK: ESP32-S3's original overlay tied MOSI and
+ * MISO to the *same* physical pad via its software-configurable GPIO
+ * matrix. SR110 has fixed per-pad alternate-function muxing - MOSI and
+ * MISO are two distinct, fixed pins - so this port requires a *physical
+ * jumper wire between the MOSI and MISO test points* on the header.
+ *
+ * CONFIRMED against the SR110 RDK schematic (SC950-C01116-01 RevE,
+ * sheet 10 "PIN HEADERS, JTAG, DMIC"): spi_mstr_mosi is SoC pin GPIO23
+ * and spi_mstr_miso is SoC pin GPIO24, both broken out on J25 (the
+ * "Left 20pin CONN") - GPIO23/MOSI on J25 pin 14, GPIO24/MISO on J25
+ * pin 13. Jumper J25 pin 13 to J25 pin 14 directly.
+ *
+ * CONSOLE CONFLICT (the real gotcha on this board): spi_mstr_mosi,
+ * spi_mstr_miso, spi_mstr_clk, and spi_mstr_cs each share their physical
+ * pad with one of UART1_TX, UART1_RX, UART0_RX, UART0_TX respectively in
+ * this board's *default* pin assignment (this exact conflict is called
+ * out in the base board file, sr100_rdk_m55.dts, right above the default
+ * "&spi0 { ... status = "disabled"; }" block). Enabling all four SPI0
+ * signals therefore makes both UART0's and UART1's default pin groups
+ * unusable at the same time.
+ *
+ * Synaptics' own reference overlay for this exact conflict
+ * (samples/dma/sr100_rdk_m55.overlay in syna_zephyr_sdk) works around it
+ * by moving the console to UART0's *alternate* pin group - uart0_tx_c /
+ * uart0_rx_c on the GLOBAL pin controller - instead of UART0's default
+ * group (uart0_tx_b / uart0_rx_b, which collides with spi_mstr_clk /
+ * spi_mstr_cs). We follow the same validated pattern here.
+ *
+ * PRACTICAL CONSEQUENCE: console output for every SPI0-based lab in this
+ * series (04/05/07/08) comes out on a *different physical pin* than the
+ * usual on-board debug path. Note that J14 is the CMSIS-DAP debug/flash
+ * USB-C port, not a UART bridge - it was never the console path anyway.
+ *
+ * CONFIRMED against the schematic (same sheet as above): uart0_tx_c is
+ * SoC pin GPIO44 and uart0_rx_c is SoC pin GPIO45, both broken out on
+ * J24 (the "Right 20pin CONN") - GPIO44/TX on J24 pin 13, GPIO45/RX on
+ * J24 pin 14. Wire an external USB-TTL adapter's RX to J24 pin 13 and
+ * TX to J24 pin 14 (adapter GND to board GND) to see console output.
+ * This is a different header from the board's default console path
+ * (UART1 on J25 pins 13/14, GPIO23/24 - which SPI0 takes over here).
+ */
+
+&spi0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spi_mstr_mosi &spi_mstr_miso &spi_mstr_clk &spi_mstr_cs>;
+	pinctrl-names = "default";
+
+	loopback_dev: loopback@0 {
+		compatible = "zds,spi-loopback";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+	};
+};
+
+&ns16550_uart1 {
+	status = "disabled";
+};
+
+&ns16550_uart0 {
+	pinctrl-0 = <&uart0_tx_c &uart0_rx_c>;
+	pinctrl-names = "default";
+	current-speed = <230400>;
+	dlf = <2>;
+	status = "okay";
+};
+
+/ {
+	chosen {
+		zephyr,console = &ns16550_uart0;
+		zephyr,shell-uart = &ns16550_uart0;
+	};
+};

@@ -7,7 +7,7 @@ description: |
 
 compatible: "zds,st7789v"
 
-include: [spi-device.yaml]
+include: spi-device.yaml
 
 properties:
   reset-gpios:

@@ -3,10 +3,11 @@
  * I2C backpack), "LiquidCrystal-I2C" style driver, raw I2C, no Zephyr
  * Display/CFB subsystem.
  *
- * Board:   ESP32-S3-DevKitC-1 (esp32s3_devkitc/esp32s3/procpu)
- * Bus:     I2C0, SDA = GPIO8, SCL = GPIO9 (2026-09-01: series-wide
- *          GPIO8/9 unification - board default is GPIO1/GPIO2, see
- *          the overlay and Lab 01's doc for why this is overridden)
+ * Board:   Synaptics SR110 (sr100_rdk/sr100/m55)
+ *          (ported from ESP32-S3-DevKitC-1; see 02_I2C_LCD_LAB_KR.md /
+ *          _EN.md "SR110 포팅" section for what changed)
+ * Bus:     I2C0, pin group i2c0_ms_scl / i2c0_ms_sda (fixed by the SoC,
+ *          not software-configurable like ESP32-S3's GPIO matrix)
  * Backpack address: 0x27 (PCF8574, most common "LCM1602 IIC" boards)
  *                    0x3F (PCF8574A - this is what this lab defaults to,
  *                          since that's the module this lab was built
@@ -239,13 +240,21 @@ int main(void)
 	}
 
 	/* Scan first: these backpacks ship at either 0x27 (PCF8574) or
-	 * 0x3F (PCF8574A) depending on which expander chip is populated. */
+	 * 0x3F (PCF8574A) depending on which expander chip is populated.
+	 *
+	 * Probe with a 1-byte i2c_read(), not i2c_write(): on SR110's I2C
+	 * driver a write-based probe (zero-length or 1-byte dummy) is
+	 * confirmed to miss real devices on the bus, while i2c_read()
+	 * correctly reports NACKs (see Lab 01's scanner for the full
+	 * rationale). Reading is also side-effect-free here, whereas a
+	 * dummy write would briefly toggle the PCF8574's output pins.
+	 */
 	{
-		uint8_t dummy = 0;
+		uint8_t dummy;
 
 		printk("Scanning I2C0 bus (0x08-0x77)...\n");
 		for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
-			if (i2c_write(i2c, &dummy, 1, addr) == 0) {
+			if (i2c_read(i2c, &dummy, 1, addr) == 0) {
 				printk("  found device at 0x%02x\n", addr);
 				if (addr == LCD_ADDR_PCF8574A) {
 					found_3f = true;
@@ -275,9 +284,9 @@ int main(void)
 	lcd_set_cursor(i2c, 0, 0);
 	lcd_print(i2c, "Hello World!");
 	lcd_set_cursor(i2c, 1, 0);
-	lcd_print(i2c, "ESP32-S3 Zephyr");
+	lcd_print(i2c, "SR110 Zephyr");
 
-	printk("LCD initialized and \"Hello World!\" / \"ESP32-S3 Zephyr\" written\n");
+	printk("LCD initialized and \"Hello World!\" / \"SR110 Zephyr\" written\n");
 
 	while (1) {
 		k_sleep(K_SECONDS(5));

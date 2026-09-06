@@ -1,0 +1,34 @@
+/*
+ * Synaptics SR110 (sr100_rdk/sr100/m55): enable I2C0 for the SSD1306
+ * OLED (I2C mode).
+ *
+ * Same I2C0 pin group as Labs 01/02 (i2c0_ms_scl / i2c0_ms_sda) - this
+ * series standardizes all external I2C wiring on I2C0, since I2C1 is
+ * already committed to onboard peripherals (GPIO expander, accelerometer,
+ * camera). See Lab 01's overlay comment for the full rationale.
+ *
+ * No child devicetree node for the OLED: this lab talks to the SSD1306
+ * directly over raw I2C (main.c issues its own command/data writes),
+ * rather than using Zephyr's in-tree "solomon,ssd1306" display driver.
+ * This is deliberate - the SSD1306 ships at either 0x3C or 0x3D
+ * depending on the module's SA0 strap, and a devicetree node's `reg`
+ * (I2C address) is fixed at build time. Since this lab's whole point is
+ * to *scan* for the address at boot and use whichever one responds
+ * (see main.c), a static devicetree binding doesn't fit - same reasoning
+ * Lab 02 used for the raw-I2C PCF8574 LCD backpack.
+ */
+
+&i2c0_ms_scl {
+	bias-pull-up;
+};
+
+&i2c0_ms_sda {
+	bias-pull-up;
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	pinctrl-0 = <&i2c0_ms_scl &i2c0_ms_sda>;
+	pinctrl-names = "default";
+};

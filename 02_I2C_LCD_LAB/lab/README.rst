@@ -27,7 +27,7 @@ PCF8574A) and uses whichever one responds.
 Requirements
 ************
 
-* An :zephyr:board:`esp32s3_devkitc` board
+* A Synaptics SR110 board (``sr100_rdk/sr100/m55``)
 * A 16x2 HD44780-compatible character LCD with a PCF8574/PCF8574A I2C
   backpack
 
@@ -37,15 +37,15 @@ Wiring
 * Backpack VCC -> see the power/signal-level note in the lab's Korean
   doc before choosing 3.3V or 5V
 * Backpack GND -> board GND
-* Backpack SDA -> board GPIO8 (I2C0 SDA, series-wide pin as of 2026-09-01)
-* Backpack SCL -> board GPIO9 (I2C0 SCL, series-wide pin as of 2026-09-01)
+* Backpack SDA -> board I2C0 SDA (pin group ``i2c0_ms_sda``)
+* Backpack SCL -> board I2C0 SCL (pin group ``i2c0_ms_scl``)
 
 Building and Running
 *********************
 
 .. zephyr-app-commands::
-   :zephyr-app: samples/boards/esp32s3_devkitc/i2c_lcd_lab
-   :board: esp32s3_devkitc/esp32s3/procpu
+   :zephyr-app: samples/boards/sr100_rdk/i2c_lcd_lab
+   :board: sr100_rdk/sr100/m55
    :goals: build flash
 
 Sample Output
@@ -57,7 +57,7 @@ Sample Output
    Scanning I2C0 bus (0x08-0x77)...
      found device at 0x3f
    Using LCD backpack address 0x3f
-   LCD initialized and "Hello World!" / "ESP32-S3 Zephyr" written
+   LCD initialized and "Hello World!" / "SR110 Zephyr" written
 
 The LCD itself should show ``Hello World!`` on the first line and
-``ESP32-S3 Zephyr`` on the second.
+``SR110 Zephyr`` on the second.

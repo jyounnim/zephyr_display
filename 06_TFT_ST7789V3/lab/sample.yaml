@@ -1,7 +1,8 @@
 sample:
   description: >
     Draw color bars and "Hello World!" on a 1.69" 240x280 ST7789V3 SPI
-    TFT panel using raw SPI writes (no Zephyr display driver).
+    TFT panel on the Synaptics SR110 (sr100_rdk/sr100/m55) using raw
+    SPI writes (no Zephyr display driver).
   name: tft_st7789v3
 common:
   tags:
@@ -10,7 +11,7 @@ common:
 tests:
   sample.display.st7789v3:
     platform_allow:
-      - esp32s3_devkitc/esp32s3/procpu
+      - sr100_rdk/sr100/m55
     harness: console
     harness_config:
       type: one_line

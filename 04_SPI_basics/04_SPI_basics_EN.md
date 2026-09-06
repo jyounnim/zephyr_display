@@ -4,6 +4,8 @@
 >
 > Also filled in `CMakeLists.txt` and `sample.yaml`, which were listed in the folder tree but had no content shown in the original document. The code, overlay, and custom binding were cross-checked against official Zephyr sources and left unchanged. See "Review summary" at the bottom for details.
 
+> **SR110 porting note (2026-09-01)**: originally written for the ESP32-S3-DevKitC-1. The I2C-vs-SPI comparison below still applies regardless of platform, but **SR110 has no ESP32-S3-style GPIO matrix, so the "map the same pin to both MOSI and MISO" software trick is impossible here** - a real jumper wire is required instead. SR110's only SPI master (SPI0) also shares its pins with the board's default console UART, which requires moving the console to a different UART pin group - see the "SPI0/console conflict" section below.
+
 ## What this lab covers
 
 The original plan included an "SPI scanner," but on review, **SPI is structurally incapable of I2C-style scanning**. This lab explains why, and builds a **loopback self-test** instead - one that verifies the SPI bus itself is working correctly.
@@ -30,22 +32,39 @@ Split it into two separate questions.
 
 If you physically jumper MOSI (what the master sends) to MISO (what the master receives), or - even simpler - share the same GPIO pin between them at the pinmux level, whatever you send comes right back. If the data matches exactly, that confirms "at minimum, the SPI peripheral, clock, and pin routing are all working."
 
-This lab uses the **no-jumper-wire** version: the overlay maps MISO and MOSI onto the same GPIO (GPIO8). The ESP32-S3's GPIO matrix lets input routing and output routing be configured independently per pin, so the same physical pad can act as "SPI2 output (MOSI)" and "SPI2 input (MISO)" at the same time - whatever the master drives out on MOSI is read straight back on MISO on that same pin.
+The original ESP32-S3 version used the **no-jumper-wire** trick: the overlay maps MISO and MOSI onto the same GPIO (GPIO8). The ESP32-S3's GPIO matrix lets input routing and output routing be configured independently per pin, so the same physical pad can act as "SPI2 output (MOSI)" and "SPI2 input (MISO)" at the same time.
+
+**SR110 can't do this.** The SoC package fixes each pad's alternate function, so MOSI and MISO are distinct, fixed pins from the start. The SR110 version therefore requires a **physical jumper wire directly connecting the MOSI and MISO pads**.
+
+## SPI0/console conflict — SR110's most important constraint
+
+SR110 has exactly **one SPI *master* controller: SPI0** (SPI1 also exists but is slave-only, so it can't be used for this test). The base devicetree (`sr100_rdk_m55.dts`) already calls out a conflict:
+
+> "the default pinmux configuration for this board uses GP23/GP24 for UART1_TX/UART1_RX respectively, which conflicts with the spi_mstr_mosi/spi_mstr_miso muxes."
+
+In other words, SPI0's MOSI/MISO/CLK/CS signals each share their exact physical pad with UART1_TX, UART1_RX, UART0_RX, and UART0_TX respectively. Turning on SPI0 makes the board's default console (UART1, GPIO23/24, connected via an external USB-TTL adapter on the J25 header) unusable.
+
+**Fix**: Synaptics' own official SDK has already hit this exact conflict - `samples/dma/sr100_rdk_m55.overlay` works around it by moving the console to UART0's *alternate* pin group (`uart0_tx_c`/`uart0_rx_c`, on the GLOBAL pin domain - UART0's *default* group, `uart0_tx_b`/`uart0_rx_b`, collides with spi_mstr_clk/cs instead, so that's not usable either). This lab's overlay follows the same validated pattern.
+
+> ✅ **Confirmed against the schematic** (SC950-C01116-01 RevE, sheet 10 "PIN HEADERS, JTAG, DMIC"): `uart0_tx_c` is SoC pin **GPIO44** and `uart0_rx_c` is **GPIO45**, both broken out on **J24 ("Right 20pin CONN") pins 13/14** (TX=pin 13, RX=pin 14). Wire an external USB-TTL adapter's RX to J24 pin 13, TX to J24 pin 14, and GND to board GND to see console output. This is a *different* header from the board's default console path (UART1 on J25 pins 13/14 = GPIO23/24) - don't mix them up, since SPI0 takes over GPIO23/24 in this lab.
+>
+> **The MOSI-MISO jumper location is also confirmed**: `spi_mstr_mosi`=GPIO23 and `spi_mstr_miso`=GPIO24, both broken out on **J25 ("Left 20pin CONN") pins 13/14** (MISO=pin 13, MOSI=pin 14). **Jumper J25 pin 13 directly to J25 pin 14.**
 
 ## Requirements
 
-- No extra hardware needed (a pure software/pinmux loopback)
+- 1 MOSI-MISO jumper wire, connecting J25 pin 13 to J25 pin 14 (required on SR110, unlike ESP32-S3's software loopback trick)
+- An external USB-TTL adapter wired to J24 pins 13/14 to observe console output (see "SPI0/console conflict" above)
 
 ## File Layout
 
 ```
 Zephyr_display/
-└── 03_SPI_basics/
+└── 04_SPI_basics/
     ├── lab/
     │   ├── src/
     │   │   └── main.c
     │   ├── boards/
-    │   │   └── esp32s3_devkitc_esp32s3_procpu.overlay
+    │   │   └── sr100_rdk_sr100_m55.overlay
     │   ├── dts/
     │   │   └── bindings/
     │   │       └── spi/
@@ -53,33 +72,18 @@ Zephyr_display/
     │   ├── CMakeLists.txt
     │   ├── prj.conf
     │   └── sample.yaml
-    └── 03_SPI_basics_EN.md
+    ├── 04_SPI_basics_KR.md
+    └── 04_SPI_basics_EN.md
 ```
 
 ## Devicetree Overlay
 
 ```dts
-&pinctrl {
-    spim2_loopback: spim2_loopback {
-        group1 {
-            pinmux = <SPIM2_MISO_GPIO8>;
-            output-enable;
-        };
-        group2 {
-            pinmux = <SPIM2_MOSI_GPIO8>;   /* same GPIO8 as MISO - this is the trick */
-            input-enable;
-        };
-        group3 {
-            pinmux = <SPIM2_SCLK_GPIO12>, <SPIM2_CSEL_GPIO10>;
-        };
-    };
-};
-
-&spi2 {
+&spi0 {
     #address-cells = <1>;
     #size-cells = <0>;
     status = "okay";
-    pinctrl-0 = <&spim2_loopback>;
+    pinctrl-0 = <&spi_mstr_mosi &spi_mstr_miso &spi_mstr_clk &spi_mstr_cs>;
     pinctrl-names = "default";
 
     loopback_dev: loopback@0 {
@@ -88,9 +92,28 @@ Zephyr_display/
         spi-max-frequency = <1000000>;
     };
 };
+
+&ns16550_uart1 {
+    status = "disabled";
+};
+
+&ns16550_uart0 {
+    pinctrl-0 = <&uart0_tx_c &uart0_rx_c>;
+    pinctrl-names = "default";
+    current-speed = <230400>;
+    dlf = <2>;
+    status = "okay";
+};
+
+/ {
+    chosen {
+        zephyr,console = &ns16550_uart0;
+        zephyr,shell-uart = &ns16550_uart0;
+    };
+};
 ```
 
-Notice that MOSI and MISO are mapped to the **same physical pin (GPIO8)**, one set `output-enable` and the other `input-enable` - that's the whole trick behind a jumper-free loopback. SCK/CS use GPIO12/GPIO10 respectively (these are arbitrary free pins, not pins reserved for anything else on this board - worth double-checking against your board revision's silkscreen if you repurpose them).
+`spi_mstr_mosi`/`spi_mstr_miso` are distinct fixed pads on SR110, so per the "Requirements" section above, **connect them with a real jumper wire** for the loopback to close. The rest of the overlay (disabling `uart1`, reconfiguring `uart0` onto `uart0_tx_c`/`uart0_rx_c`) is the console workaround explained in "SPI0/console conflict" above.
 
 ## Custom Devicetree Binding
 
@@ -128,7 +151,7 @@ CONFIG_SPI=y
 CONFIG_GPIO=y
 ```
 
-No need to turn on the ESP32 SPI driver (`CONFIG_ESP32_SPIM`) separately - Kconfig defines it to auto-enable whenever the devicetree has an `espressif,esp32-spi` node with `status = "okay"`. (This differs from the I2C lab, where `CONFIG_I2C_ESP32=y` had to be set explicitly - worth keeping in mind.)
+Same as the ESP32-S3 version: no need to turn on the SPI driver separately. SR110's `snps,designware-spi` driver also auto-enables whenever the devicetree node is `status = "okay"`.
 
 ## sample.yaml
 
@@ -136,22 +159,22 @@ No need to turn on the ESP32 SPI driver (`CONFIG_ESP32_SPIM`) separately - Kconf
 sample:
   name: SPI basics - bus loopback self-test
   description: >
-    Verify the SPI2 (GPSPI2) peripheral, clock, and pin routing on the
-    ESP32-S3-DevKitC-1 using a devicetree-level loopback (MISO and MOSI
-    mapped to the same GPIO pad) - no jumper wire and no real SPI device
-    required.
+    Verify the SPI0 peripheral, clock, and pin routing on the Synaptics
+    SR110 (sr100_rdk/sr100/m55) using a physical MOSI-MISO jumper wire
+    loopback (SR110 has no ESP32-style software GPIO-matrix trick, so a
+    real jumper wire is required here).
 common:
   tags:
     - spi
   platform_allow:
-    - esp32s3_devkitc/esp32s3/procpu
+    - sr100_rdk/sr100/m55
   harness: console
   harness_config:
     type: one_line
     regex:
       - "PASS: received bytes match sent bytes.*"
 tests:
-  sample.spi.esp32s3_loopback:
+  sample.spi.sr110_loopback:
     build_only: true
 ```
 
@@ -227,13 +250,17 @@ int main(void) {
 
 ## Build & Run
 
-```bash
-west build -p always -b esp32s3_devkitc/esp32s3/procpu 03_SPI_basics/lab
-west flash
-west espressif monitor
+```powershell
+west build -p always -b sr100_rdk/sr100/m55 .\04_SPI_basics\lab\
 ```
 
-(On PowerShell, just swap the path: `west build -p always -b esp32s3_devkitc/esp32s3/procpu .\03_SPI_basics\lab\`.)
+```bash
+python srsdk_tools/openocd_flash.py --openocd <path to openocd> --flash-offset 0x0 \
+    --file-offset 0x0 --cfg_path srsdk_tools/Input_Config/sr100_m55.cfg \
+    --image build/zephyr/zephyr_flash.bin
+```
+
+The console has moved to UART0's alternate pins (`uart0_tx_c`/`uart0_rx_c` = GPIO44/45) per "SPI0/console conflict" above - connect an external USB-TTL adapter to J24 pins 13/14 and open it at **230400bps 8N1**.
 
 ### Expected output
 
@@ -256,23 +283,12 @@ Confirm that `Sent` and `Received` match exactly.
 
 | Symptom | Cause / Fix |
 |---|---|
-| `SPI device not ready` | The overlay isn't actually being applied - check that the filename matches the board target |
-| `spi_transceive_dt failed` | A problem with the SPI bus configuration itself - run `west build -t devicetree` to confirm the `&spi2` node merged correctly |
-| Sent and Received don't match | Double-check the overlay actually maps MISO/MOSI to the same GPIO - if they're on different pins, there's no loopback |
+| `SPI device not ready` | The overlay isn't actually being applied - check that the overlay filename (`sr100_rdk_sr100_m55.overlay`) matches the west board target |
+| `spi_transceive_dt failed` | A problem with the SPI bus configuration itself - run `west build -t devicetree` to confirm the `&spi0` node merged correctly |
+| Sent and Received don't match | Confirm the MOSI-MISO jumper wire is actually connected - SR110 has no software loopback, so the jumper is required |
+| No console output at all | Confirm the external USB-TTL adapter is connected to UART0's alternate pins (`uart0_tx_c`/`uart0_rx_c`), not the board's default J25/GPIO23-24 - that console dies once SPI0 is enabled |
 | Devicetree binding not found (`'zds,spi-loopback' compatible not found`) | Check that `CMakeLists.txt`'s `list(APPEND DTS_ROOT ...)` comes before `find_package(Zephyr...)` |
-| Build error about an undeclared macro like `SPIM2_MISO_GPIO8` | See "Review summary" below - the macro naming follows the expected convention, but this hasn't been confirmed on an actual build |
 
 ## Next
 
-Lab 4 (`04_OLED_SSD1306_SPI`) connects a real OLED (SSD1306 in SPI mode) on top of the SPI bus verified here.
-
----
-
-## Review summary
-
-Before delivering this document, the following was cross-checked against official Zephyr sources:
-
-- **`&spi2` label and `compatible`**: confirmed the ESP32-S3 SoC devicetree defines both `spi2` (base address 0x60024000, GPSPI2) and `spi3` (0x60025000, GPSPI3) nodes with `compatible = "espressif,esp32-spi"` and `status = "disabled"` by default. Turning it on via `status = "okay"` in the overlay is the same pattern used in the I2C0 lab.
-- **`CONFIG_ESP32_SPIM` auto-enable**: confirmed in Zephyr's `drivers/spi/Kconfig.esp32` that `ESP32_SPIM` is defined as `depends on DT_HAS_ESPRESSIF_ESP32_SPI_ENABLED` with `default y`. In other words, enabling the SPI node in the devicetree is enough to auto-enable the driver, so `CONFIG_SPI=y` alone in prj.conf is sufficient (unlike the I2C lab, which needed an explicit `CONFIG_xxx_ESP32=y`).
-- **Pinmux macro naming convention**: confirmed that `esp32s3-pinctrl.h` mechanically generates I2S-related signal macros in the form `<PERIPHERAL>_<SIGNAL>_GPIO<N>` (e.g. `I2S1_MCLK_GPIO8`) for every GPIO number. `SPIM2_MISO_GPIO8`-style macros are very likely generated the same way, but the file was too large to directly confirm the SPI section verbatim. **Worth a quick check on your first build** - if a macro name is wrong, the devicetree compilation stage fails immediately with an "undeclared" error, which is much faster to diagnose than a hardware issue.
-- **The "map MOSI/MISO to the same GPIO" technique itself**: structurally sound, since the ESP32/ESP32-S3 GPIO matrix does let input and output signal routing be configured independently per pin. However, whether Zephyr's official `tests/drivers/spi/spi_loopback` repository actually uses this exact technique for ESP32-family boards could not be directly confirmed due to repository browsing limits - treat the original document's claim that "this is what Zephyr's own official test does" as unverified, and judge this lab's soundness on the GPIO-matrix architecture reasoning above instead.
+Lab 5 (`05_OLED_SSD1306_SPI`) connects a real OLED (SSD1306 in SPI mode) on top of the SPI0 bus verified here.

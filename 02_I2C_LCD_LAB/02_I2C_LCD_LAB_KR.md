@@ -2,7 +2,9 @@
 
 ## 1. 개요
 
-보드는 **ESP32-S3-DevKitC-1** (`esp32s3_devkitc/esp32s3/procpu`), 프레임워크는 **Zephyr RTOS**를 사용합니다.
+보드는 **Synaptics SR110** (`sr100_rdk/sr100/m55`), 프레임워크는 **Zephyr RTOS**를 사용합니다.
+
+> **SR110 포팅 노트 (2026-09-01)**: 원래 ESP32-S3-DevKitC-1용으로 작성된 랩입니다. PCF8574 비트맵(3절)과 HD44780 초기화 시퀀스(6절)는 플랫폼 무관하게 그대로 유효하지만, 배선 핀(4절)과 devicetree 오버레이, 그리고 부팅 시 bus scan의 프로빙 방식은 SR110 기준으로 바뀌었습니다 — 01번 랩(`01_I2C_bus_scanner`)에서 확인된 것과 동일하게, SR110에서는 zero-length/1-byte dummy `i2c_write()` 프로빙이 아니라 **1바이트 `i2c_read()`** 프로빙을 써야 합니다.
 
 흔히 "LCM1602 IIC" 모듈이라고 부르는, HD44780 호환 16x2 캐릭터 LCD 뒤에 **PCF8574(A) I2C GPIO 익스팬더**가 붙어 있는 백팩 보드를 사용합니다. 아두이노의 `LiquidCrystal_I2C` 라이브러리가 하는 일을 그대로 Zephyr에서 raw I2C로 재구현한 것입니다 (Zephyr의 Display/CFB 서브시스템은 쓰지 않음).
 
@@ -10,8 +12,6 @@
 - 그 8개 핀이 HD44780의 RS/RW/EN + 백라이트 트랜지스터 + 4비트 데이터버스(D4-D7)에 배선되어 있습니다.
 
 즉 "LCD를 향한 I2C 통신"이 아니라, **"GPIO 익스팬더를 향한 I2C 통신 + 그 뒤의 병렬 LCD 프로토콜을 흉내"** 내는 구조입니다.
-
-> ℹ️ **2026-09-01 GPIO 핀 변경**: 이 랩은 원래 보드 기본 pinctrl(SDA=GPIO1/SCL=GPIO2)을 그대로 썼지만, `Zephyr_display` 시리즈 전체가 I2C0 핀을 **SDA=GPIO8/SCL=GPIO9로 통일**하기로 결정하면서 이 랩도 오버레이를 GPIO8/9로 바꿨습니다. 아래 4절 배선표는 GPIO8/9 기준으로 갱신했습니다.
 
 ## 2. 주소: 0x27 vs 0x3F
 
@@ -40,21 +40,21 @@
 
 ## 4. 배선
 
-| 신호 | ESP32-S3-DevKitC-1 | 백팩 |
+| 신호 | Synaptics SR110 | 백팩 |
 | --- | --- | --- |
 | VCC | (아래 5절 참고) | VCC |
 | GND | GND | GND |
-| SDA | GPIO8 (I2C0 SDA, 시리즈 통일 핀) | SDA |
-| SCL | GPIO9 (I2C0 SCL, 시리즈 통일 핀) | SCL |
+| SDA | I2C0 SDA (핀 그룹 `i2c0_ms_sda`) | SDA |
+| SCL | I2C0 SCL (핀 그룹 `i2c0_ms_scl`) | SCL |
 
-보드 기본 pinctrl은 GPIO1/GPIO2인데, 이 시리즈는 GPIO8/9로 통일하기로 했으므로 오버레이에서 `i2c0_default`를 같은 이름으로 재선언해 덮어씁니다 — Zephyr devicetree 병합 규칙상 나중에 선언된 프로퍼티가 이전 값을 이기기 때문에, 이 블록을 빼면 조용히 보드 기본값(GPIO1/2)으로 되돌아가 버립니다 (Lab 01 문서에서 실제로 겪은 문제, 자세한 설명은 그쪽 참고).
+01번 랩과 동일한 I2C0 버스를 그대로 재사용합니다. SR110의 I2C0은 base devicetree에서 기본 `status = "disabled"`이고 pinctrl-0 자체가 없어서, 오버레이에서 새로 켜기만 하면 됩니다 (ESP32-S3처럼 보드 기본값을 같은 이름으로 재선언해 덮어쓰는 트릭이 필요 없습니다). 자세한 배경은 01번 랩 문서를 참고하십시오.
 
 ## 5. 전원/신호 레벨 주의 (중요)
 
 이 백팩 + LCD 조합은 보통 **5V 기준으로 설계**되어 있습니다:
 
 - PCF8574 자신의 SDA/SCL 풀업 저항이 보통 모듈 위에 이미 있고, VCC에 연결되어 있습니다. VCC를 5V로 주면 I2C 버스의 idle-high 레벨도 5V가 됩니다.
-- ESP32-S3의 GPIO는 **3.3V 전용**이며 5V 입력을 정격으로 보장하지 않습니다. 5V 버스를 ESP32-S3 GPIO에 직결하면 장기적으로 GPIO가 손상될 수 있습니다.
+- SR110의 GPIO도 **3.3V 전용**이며 5V 입력을 정격으로 보장하지 않습니다. 5V 버스를 SR110 GPIO에 직결하면 장기적으로 GPIO가 손상될 수 있습니다.
 - LCD 자체의 명암(contrast)도 보통 5V 기준으로 맞춰져 있어서, 3.3V로 구동하면 트리머 포텐셔미터를 조정해도 글자가 흐리게 나올 수 있습니다.
 
 **권장 순서**:
@@ -62,8 +62,8 @@
 1. 먼저 모듈을 3.3V로 구동해 보고 (VCC -> 보드 3V3), 명암 트리머를 조정해서 글자가 보이는지 확인합니다. 많은 HD44780 패널이 3.3V에서도 동작합니다.
 2. 3.3V에서 전혀 안 보이거나 백라이트만 켜지고 글자가 없다면, 5V가 필요한 패널일 가능성이 큽니다. 이 경우:
    - VCC는 보드 5V 핀에서 공급하되,
-   - SDA/SCL은 **양방향 로직 레벨 시프터**를 거쳐 ESP32-S3 GPIO와 연결하는 것을 권장합니다.
-3. "일단 되는지 보자"고 5V 버스를 3.3V GPIO에 직결하는 것은 실제로 많은 취미 프로젝트에서 별 문제 없이 동작하는 사례가 많지만, 정격 밖의 사용이라는 점은 분명히 인지하고 진행하세요.
+   - SDA/SCL은 **양방향 로직 레벨 시프터**를 거쳐 SR110 GPIO와 연결하는 것을 권장합니다.
+3. "일단 되는지 보자"고 5V 버스를 3.3V GPIO에 직결하는 것은 실제로 많은 취미 프로젝트에서 별 문제 없이 동작하는 사례가 많지만, 정격 밖의 사용이라는 점은 분명히 인지하고 진행하십시오.
 
 이 랩의 코드/오버레이는 어느 전원 방식을 선택하든 동일하게 동작합니다 (전원 배선은 소프트웨어가 알 수 없는 영역).
 
@@ -85,11 +85,17 @@ RW을 안 쓰고(write-only) busy flag를 읽지 않기 때문에, 초기화와 
 
 ## 7. 빌드 & 실행
 
-```bash
-west build -b esp32s3_devkitc/esp32s3/procpu lab
-west flash
-west espressif monitor
+```powershell
+west build -p always -b sr100_rdk/sr100/m55 .\02_I2C_LCD_LAB\lab\
 ```
+
+```bash
+python srsdk_tools/openocd_flash.py --openocd <openocd 경로> --flash-offset 0x0 \
+    --file-offset 0x0 --cfg_path srsdk_tools/Input_Config/sr100_m55.cfg \
+    --image build/zephyr/zephyr_flash.bin
+```
+
+이 랩도 I2C0만 사용하므로 콘솔은 보드 기본값(UART1, GPIO23=TX/GPIO24=RX, J25 헤더 + 외부 USB-TTL 어댑터, **230400bps 8N1**) 그대로 사용하면 됩니다.
 
 ### 예상 시리얼 출력
 
@@ -98,35 +104,37 @@ I2C LCD (PCF8574 + HD44780) lab starting
 Scanning I2C0 bus (0x08-0x77)...
   found device at 0x3f
 Using LCD backpack address 0x3f
-LCD initialized and "Hello World!" / "ESP32-S3 Zephyr" written
+LCD initialized and "Hello World!" / "SR110 Zephyr" written
 ```
 
-LCD 화면에는 1번째 줄에 `Hello World!`, 2번째 줄에 `ESP32-S3 Zephyr`가 표시되어야 합니다.
+LCD 화면에는 1번째 줄에 `Hello World!`, 2번째 줄에 `SR110 Zephyr`가 표시되어야 합니다.
 
 ## 8. 트러블슈팅
 
 | 증상 | 가능한 원인 | 확인/조치 |
 | --- | --- | --- |
-| 스캔에서 0x27/0x3F 둘 다 안 잡힘 | 배선(SDA/SCL 반대 연결 포함), 전원 미공급 | 배선 재확인, `west espressif monitor` 로그의 스캔 결과 전체 확인 |
+| 스캔에서 0x27/0x3F 둘 다 안 잡힘 | 배선(SDA/SCL 반대 연결 포함), 전원 미공급 | 배선 재확인, 콘솔(외부 USB-TTL, 230400bps 8N1) 로그의 스캔 결과 전체 확인 |
 | 스캔은 되는데 화면에 아무것도 안 보임 | 백라이트는 켜지는데 글자만 안 보이면 대개 명암(contrast) 문제 | 백팩의 트리머 포텐셔미터를 돌려보기 (드라이버 문제 아님) |
 | 백라이트도 안 켜짐 | 전원(VCC/GND) 문제, 5V 필요 모듈을 3.3V로 구동 | 5절의 전원 가이드 참고 |
 | 트리머를 끝까지 돌려도 글자가 흐리고 정면에서는 잘 안 보임(옆에서 봐야 겨우 읽힘) | VDD를 3.3V로 구동 중 - HD44780은 보통 V0가 VDD보다 4~5V 낮아야 진한 명암이 나오는데, VDD=3.3V면 V0가 내려갈 수 있는 폭 자체가 부족해서 트리머로도 한계가 있음 | 5절 가이드대로 VDD를 5V로 올리고 SDA/SCL은 레벨 시프터를 거쳐 연결 |
 | 글자가 깨지거나 이상한 위치에 표시됨 | 3절 비트 맵과 실제 모듈 배선이 다름, 또는 EN 펄스 타이밍 문제 | 다른 제조사 모듈이면 비트 맵 재확인 필요 |
 | 첫 글자만 깨지고 나머지는 정상 | 초기화 시퀀스 타이밍 부족 | `lcd_init()`의 대기시간을 늘려서 재시도 |
 | I2C 쓰기 자체가 실패(ret != 0) | 배선/전원, 또는 두 개 이상 I2C 슬레이브가 같은 주소를 공유 | `i2c_write` 리턴값과 스캔 결과 로그 확인 |
+| 스캔에서 실제로 연결한 디바이스가 하나도 안 잡힘 (write는 성공했었는데) | 프로빙 방식이 `i2c_write`로 되돌아가 있는지 확인 | SR110에서는 **1바이트 `i2c_read()`** 프로빙이어야 정상 동작합니다 (01번 랩 문서 5절 참고) |
 
 ## 9. 파일 구성
 
 ```
 02_I2C_LCD_LAB/
 ├── 02_I2C_LCD_LAB_KR.md
+├── 02_I2C_LCD_LAB_EN.md
 └── lab/
     ├── CMakeLists.txt
     ├── README.rst
     ├── sample.yaml
     ├── prj.conf
     ├── boards/
-    │   └── esp32s3_devkitc_esp32s3_procpu.overlay
+    │   └── sr100_rdk_sr100_m55.overlay
     └── src/
         └── main.c
 ```

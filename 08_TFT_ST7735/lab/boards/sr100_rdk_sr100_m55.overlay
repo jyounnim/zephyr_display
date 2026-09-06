@@ -1,0 +1,72 @@
+/*
+ * Synaptics SR110 (sr100_rdk/sr100/m55): ST7735 128x160 color TFT over SPI0.
+ *
+ * Write-only module (no MISO), same rationale as Lab 07 for still
+ * routing spi_mstr_miso for pinctrl-0 consistency across the SPI0 labs.
+ *
+ * compatible = "zds,st7735" is the same custom binding as the original
+ * lab (board-agnostic - see lab/dts/bindings/display/zds,st7735.yaml),
+ * unchanged.
+ *
+ * SPI0/console conflict: see 04_SPI_basics' overlay for the full
+ * explanation - console is moved to UART0's alternate pin group
+ * (uart0_tx_c/rx_c = GPIO44/GPIO45, confirmed on J24 ("Right 20pin
+ * CONN") pins 13/14). An external USB-TTL adapter is needed there to
+ * see console output.
+ *
+ * CS: native hardware CS (spi_mstr_cs pinctrl, no cs-gpios) - the same
+ * mechanism Lab 05 (SSD1306 SPI) confirmed working on real hardware.
+ *
+ * reset-gpios / dc-gpios: deliberately reusing Lab 05/06's exact pins
+ * (GPIO17/18, J24 pins 3/4) instead of this lab's original GPIO13/14
+ * choice. Lab 06 (ST7789V3, a different raw-SPI color TFT on this same
+ * SPI0 bus) has so far stayed blank on real hardware despite matching
+ * this exact CS/pin/chunking setup, so this lab reuses the identical
+ * configuration on purpose - if ST7735 works here, the problem is
+ * specific to Lab 06's controller/module; if it doesn't, the problem
+ * is likely common to raw-SPI custom TFT drivers on this SoC.
+ *
+ * spi-max-frequency stays at 4 MHz, same as the original lab.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+&spi0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spi_mstr_mosi &spi_mstr_miso &spi_mstr_clk &spi_mstr_cs>;
+	pinctrl-names = "default";
+
+	st7735: st7735@0 {
+		compatible = "zds,st7735";
+		reg = <0>;
+		spi-max-frequency = <4000000>;
+
+		/* Active low: physically pulled low to reset the controller.
+		 * SoC GPIO17, J24 pin 3 - same pin Lab 05/06 already use. */
+		reset-gpios = <&gpioa 17 GPIO_ACTIVE_LOW>;
+		/* Active high: driven low for a command byte, high for data.
+		 * SoC GPIO18, J24 pin 4 - same pin Lab 05/06 already use. */
+		dc-gpios = <&gpioa 18 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&ns16550_uart1 {
+	status = "disabled";
+};
+
+&ns16550_uart0 {
+	pinctrl-0 = <&uart0_tx_c &uart0_rx_c>;
+	pinctrl-names = "default";
+	current-speed = <230400>;
+	dlf = <2>;
+	status = "okay";
+};
+
+/ {
+	chosen {
+		zephyr,console = &ns16550_uart0;
+		zephyr,shell-uart = &ns16550_uart0;
+	};
+};

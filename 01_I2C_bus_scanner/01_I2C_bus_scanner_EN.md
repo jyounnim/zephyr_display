@@ -1,4 +1,6 @@
-# 1. I2C Bus Scanner — Zephyr (ESP32-S3)
+# 1. I2C Bus Scanner — Zephyr (Synaptics SR110, sr100_rdk/sr100/m55)
+
+> **SR110 porting note (2026-09-01)**: originally written for the ESP32-S3-DevKitC-1. The I2C concept explanations below still apply regardless of platform, but **the wiring pins, the devicetree overlay, and the probing method (read vs. write) have all changed for SR110** - the probing method in particular is the exact opposite of the ESP32-S3 version, so please re-read that section.
 
 An example that scans I2C0 once from a dedicated thread at boot, finds
 every device that answers with an ACK, and prints the result as an
@@ -16,7 +18,7 @@ Zephyr_display/
     │   ├── src/
     │   │   └── main.c              # scanner logic (comments in English)
     │   ├── boards/
-    │   │   └── esp32s3_devkitc_esp32s3_procpu.overlay   # overlay enabling I2C0
+    │   │   └── sr100_rdk_sr100_m55.overlay   # overlay enabling I2C0
     │   ├── CMakeLists.txt
     │   ├── prj.conf
     │   └── sample.yaml
@@ -38,17 +40,22 @@ I2C's two signal lines are named **SDA** (Serial **DA**ta) and **SCL** (Serial *
 
 > ⚠️ **SCK/SCLK are SPI terms.** I2C's clock line is always called **SCL** - easy to confuse since some module silkscreens print "SCK" or "CLK" instead, but on an I2C module (usually 4 pins: VCC/GND/SDA/SCL), that pin is SCL.
 
-| Signal | Role | ESP32-S3 connection (per this lab's overlay) |
+| Signal | Role | SR110 connection (per this lab's overlay) |
 |---|---|---|
 | VCC | Power | 3.3V |
 | GND | Ground | GND |
-| **SDA** | Data | **GPIO8** |
-| **SCL** | Clock (SPI's SCK equivalent) | **GPIO9** |
+| **SDA** | Data | I2C0 SDA (pin group `i2c0_ms_sda`) |
+| **SCL** | Clock (SPI's SCK equivalent) | I2C0 SCL (pin group `i2c0_ms_scl`) |
 
-These two pins (GPIO8/9) match the ESP32-S3 Arduino framework's default I2C pins (`Wire.begin()`'s defaults) - the same pins used in the non-OS curriculum, so if you've already wired that up, it can be reused as-is. Changing the overlay's `pinmux` value moves it to different pins.
+ESP32-S3's GPIO matrix let you freely assign any GPIO number via a macro like `pinmux = <I2C0_SDA_GPIO8>`. SR110 has no such macro - the SoC package fixes each pin's function, and I2C0's pin group is already named `i2c0_ms_scl` / `i2c0_ms_sda` (no suffix - the `_b` suffix is reserved for I2C1's alternate pin group). Check the Synaptics Platform Guide / board silkscreen for which physical header pin these correspond to.
 
 ```dts
-pinmux = <I2C0_SDA_GPIO8>, <I2C0_SCL_GPIO9>;
+&i2c0_ms_scl {
+    bias-pull-up;
+};
+&i2c0_ms_sda {
+    bias-pull-up;
+};
 ```
 
 ## How It Works
@@ -58,65 +65,66 @@ pinmux = <I2C0_SDA_GPIO8>, <I2C0_SCL_GPIO9>;
 3. After the scan finishes, prints how many devices were found and the address map
 4. Scans once and the thread exits (no repeat)
 
-## Probing Method — Why a Zero-Length Write Instead of a Read
+## Probing Method — On SR110, a 1-Byte Read, Not a Write (the Opposite of ESP32-S3)
 
-The first version tried a **1-byte read** at each address, but that occasionally **missed devices that were actually present** on real hardware. Tracking it down turned up two causes.
+The original ESP32-S3 version probed with **a zero-length write**, matching Zephyr's own official sample (`samples/drivers/i2c/i2c_scanner`), specifically to avoid **Zephyr GitHub issue #45008** ("esp32: i2c_read() error was returned successfully at the bus nack") - ESP32-family I2C drivers can't fully be trusted to detect a NACK correctly in `i2c_read()`.
 
-1. **Some I2C devices don't respond meaningfully to a read unless a register address has been written first** - for a device whose "current pointer" depends on prior state, the read result can vary from run to run.
-2. **Zephyr GitHub issue #45008** ("esp32: i2c_read() error was returned successfully at the bus nack") reports exactly this problem - ESP32-family I2C drivers can't fully be trusted to detect a NACK correctly in `i2c_read()`.
-
-**Fix**: switched to probing with **a zero-length write**, matching Zephyr's own official sample (`samples/drivers/i2c/i2c_scanner`). This only checks "was the address byte ACKed" and requires nothing further, making it far more reliable regardless of a device's internal state.
+**On SR110 (the `snps,designware-i2c` driver), the situation is confirmed to be the exact opposite on real hardware**: neither a zero-length write nor a 1-byte dummy write reliably finds devices that are actually present, while **a 1-byte `i2c_read()` correctly detects the ACK/NACK**. This port therefore flips the probing method entirely.
 
 ```c
 static bool i2c_probe_addr(const struct device *bus, uint8_t addr)
 {
-    int ret = i2c_write(bus, NULL, 0, addr);
+    uint8_t dummy;
+    int ret = i2c_read(bus, &dummy, 1, addr);
     return (ret == 0);
 }
 ```
 
+> ⚠️ If you ever port this scanner to yet another SoC, don't assume either direction transfers over - re-verify on real hardware. This lab is itself a live example of "the same problem, opposite fix, depending on the platform."
+
 ## Devicetree — Enabling I2C0
 
-ESP32-S3 boards often ship I2C0 with `status = "disabled"` by default, so it needs to be turned on via an overlay.
+SR110's I2C0 ships with `status = "disabled"` and **no default pinctrl at all**, so it must be turned on and wired in the overlay (unlike ESP32-S3, there's no "redeclare the board's default node under the same name to override it" trick needed here - SR110 simply has no default to override).
 
 ```dts
-&pinctrl {
-    i2c0_default: i2c0_default {
-        group1 {
-            pinmux = <I2C0_SDA_GPIO8>, <I2C0_SCL_GPIO9>;
-            bias-pull-up;
-            drive-open-drain;
-            output-high;
-        };
-    };
+&i2c0_ms_scl {
+    bias-pull-up;
+};
+
+&i2c0_ms_sda {
+    bias-pull-up;
 };
 
 &i2c0 {
     status = "okay";
     clock-frequency = <I2C_BITRATE_STANDARD>;
-    pinctrl-0 = <&i2c0_default>;
+    pinctrl-0 = <&i2c0_ms_scl &i2c0_ms_sda>;
     pinctrl-names = "default";
 };
 ```
 
-> ⚠️ **Worth checking — correction**: `esp32s3_devkitc` **already has** its own `i2c0_default` pinctrl node (the board default is SDA=GPIO1, SCL=GPIO2, with only `status` set to disabled). This document originally said "if that's the case, drop the `&pinctrl` block above and keep only the `&i2c0` block" - that guidance was inaccurate.
->
-> The correct move is actually **to keep the `&pinctrl` block above as-is**. This overlay redeclares a node with the **exact same name** (`i2c0_default`) that the board already defines, and under Zephyr's devicetree merge rules, a property declared later overrides an earlier value for the same node - so keeping this block is what actually rewires I2C0 to this lab's intended GPIO8/GPIO9, instead of leaving it on the board's default GPIO1/GPIO2. Conversely, dropping this block and keeping only `&i2c0` silently leaves I2C0 on the board's default GPIO1/GPIO2 - which then mismatches the wiring table above (GPIO8/9) and can make the scan find nothing (this exact GPIO8/9-vs-GPIO1/2 mix-up has caused real trouble in another lab in this series).
->
-> After `west build -t devicetree`, it's worth checking the generated `build/zephyr/zephyr.dts` to confirm the final `i2c0_default` node's `pinmux` value actually resolved to GPIO8/GPIO9.
+I2C0's pin group (`i2c0_ms_scl`/`i2c0_ms_sda`) sits on its own LPS-domain mux slot, entirely separate from the pin group shared by SPI0/UART0/UART1 - so unlike Labs 04/05/07/08, there's no console conflict here.
 
 ## Build
 
 ```powershell
-west build -p always -b esp32s3_devkitc/esp32s3/procpu .\01_I2C_bus_scanner\lab\
-west flash
-west espressif monitor
+west build -p always -b sr100_rdk/sr100/m55 .\01_I2C_bus_scanner\lab\
 ```
+
+## Flash & Console
+
+```bash
+python srsdk_tools/openocd_flash.py --openocd <path to openocd> --flash-offset 0x0 \
+    --file-offset 0x0 --cfg_path srsdk_tools/Input_Config/sr100_m55.cfg \
+    --image build/zephyr/zephyr_flash.bin
+```
+
+This lab only touches I2C0 and never reassigns any UART pins, so the console can stay on the board's default (UART1, GPIO23=TX/GPIO24=RX via the J25 header, external USB-TTL adapter, **230400bps 8N1**).
 
 ### Expected Output
 
 ```
-=== I2C Bus Scanner (ESP32-S3) ===
+=== I2C Bus Scanner (SR110) ===
 
 Scanning I2C0...
      0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f
@@ -136,18 +144,18 @@ Scan complete on I2C0: 1 device(s) found
 ## Things to Notice
 
 - This scanner is a **diagnostic tool meant to be reused across the whole `Zephyr_display` project** - whenever a later lab hits a "device not responding" issue, make it a habit to run this scanner first and confirm the address actually shows up.
-- Switching from read-probing to write-probing is a good example of "**if an implementation differs from the official sample, there's usually a reason**" - when something behaves oddly, comparing your implementation against the official sample/docs to see exactly where they diverge is a solid debugging habit.
+- Needing opposite probing methods on ESP32-S3 (zero-length write) versus SR110 (1-byte read) is a good example of "**the same problem can have opposite answers depending on the platform/driver**" - if you port this to yet another SoC, don't reuse this choice blindly; re-verify on real hardware.
 - An unexpected address in the scan result is itself useful information - it could mean a wiring mistake (a different device got connected), or a module using an address different from what you expected (some modules change address via a pin jumper).
 
 ## Troubleshooting
 
 | Symptom | Cause / Fix |
 |---|---|
-| `[I2C0] device not ready` | The overlay isn't actually being applied - check that the overlay filename matches the board target, or that it's specified via `-DEXTRA_DTC_OVERLAY_FILE` |
-| No address shows up at all | Check the SDA/SCL wiring, check the pull-up resistors, confirm the `pinmux` value matches the pins actually wired. Also see the "Worth checking — correction" box above (make sure it hasn't silently fallen back to the board's default GPIO1/2) |
-| One specific device intermittently drops out | If this is still happening, double-check `i2c_probe_addr` is really using a zero-length write - if it's reverted to the read-based approach, this problem can resurface |
-| Build error (can't find `I2C0_SDA_GPIO8` etc.) | The ESP32 pinctrl header isn't included - the board's default overlay/dtsi usually handles this, so the symbol name might differ. Use `west build -t devicetree` to see which pinmux macros are actually available |
+| `[I2C0] device not ready` | The overlay isn't actually being applied - check that the overlay filename (`sr100_rdk_sr100_m55.overlay`) matches the west board target |
+| No address shows up at all | Check SDA/SCL wiring and pull-ups, confirm `pinctrl-0` actually resolved to `i2c0_ms_scl`/`i2c0_ms_sda` via `west build -t devicetree` |
+| Specific addresses consistently missed, especially ones that used to work with a write probe | Check whether the probing method has reverted to write - SR110 requires a **1-byte read** probe (see the probing section above) |
+| Build error (can't find `i2c0_ms_scl`/`i2c0_ms_sda`) | `sr100_pinctrl.dtsi` isn't included - confirm the board.dts loaded correctly and the west target is `sr100_rdk/sr100/m55` |
 
 ## Next
 
-Lab 2 (`02_OLED_SSD1306_I2C`) puts a real OLED display on top of the wiring this scanner confirmed.
+Lab 2 (`02_I2C_LCD_LAB`) puts a real I2C LCD on top of the wiring this scanner confirmed.

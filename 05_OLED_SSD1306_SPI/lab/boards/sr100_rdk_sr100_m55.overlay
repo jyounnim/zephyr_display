@@ -1,0 +1,71 @@
+/*
+ * Synaptics SR110 (sr100_rdk/sr100/m55): SSD1306 OLED over SPI0.
+ *
+ * Requires the 7-pin SPI variant of the SSD1306 module (VCC, GND, SCK,
+ * SDA/MOSI, RES, DC, CS) - same requirement as the original ESP32-S3
+ * lab. compatible = "solomon,ssd1306" is unchanged (board-agnostic
+ * Zephyr in-tree driver).
+ *
+ * SPI0/console conflict: see 04_SPI_basics' overlay for the full
+ * explanation. In short, spi_mstr_mosi/miso/clk/cs each share a pad
+ * with UART0/UART1's default pins, so the console is moved here to
+ * UART0's alternate pin group (uart0_tx_c/rx_c = GPIO44/GPIO45,
+ * confirmed on J24 ("Right 20pin CONN") pins 13/14 - see 04_SPI_basics'
+ * overlay for wiring). An external USB-TTL adapter is needed there to
+ * see console/printk output while this lab is running.
+ *
+ * reset-gpios / data-cmd-gpios: SR110's gpioa/gpiob controllers are
+ * dedicated GPIO pins, not multiplexed with any other peripheral (unlike
+ * i2c0/i2c1/spi0/uart0/uart1's shared LPS pin groups). CONFIRMED against
+ * the SR110 RDK schematic (SC950-C01116-01 RevE, sheet 10): GPIO17/18
+ * are the SoC's I2S_BCLK/I2S_FSYNC pins, unused by this lab and broken
+ * out on J24 ("Right 20pin CONN") pins 3/4 - reused here as plain RST/DC
+ * GPIOs since this lab enables neither I2S nor SD.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+&spi0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spi_mstr_mosi &spi_mstr_miso &spi_mstr_clk &spi_mstr_cs>;
+	pinctrl-names = "default";
+
+	oled_spi: ssd1306@0 {
+		compatible = "solomon,ssd1306";
+		reg = <0>;
+		spi-max-frequency = <4000000>;
+		data-cmd-gpios = <&gpioa 18 GPIO_ACTIVE_HIGH>;  /* SoC GPIO18, J24 pin 4 */
+		reset-gpios = <&gpioa 17 GPIO_ACTIVE_LOW>;      /* SoC GPIO17, J24 pin 3 */
+		width = <128>;
+		height = <64>;
+		segment-offset = <0>;
+		page-offset = <0>;
+		display-offset = <0>;
+		multiplex-ratio = <63>;
+		segment-remap;
+		com-invdir;
+		prechargep = <0x22>;
+	};
+};
+
+&ns16550_uart1 {
+	status = "disabled";
+};
+
+&ns16550_uart0 {
+	pinctrl-0 = <&uart0_tx_c &uart0_rx_c>;
+	pinctrl-names = "default";
+	current-speed = <230400>;
+	dlf = <2>;
+	status = "okay";
+};
+
+/ {
+	chosen {
+		zephyr,console = &ns16550_uart0;
+		zephyr,shell-uart = &ns16550_uart0;
+		zephyr,display = &oled_spi;
+	};
+};

@@ -7,9 +7,9 @@ common:
 tests:
   sample.i2c.bus_scanner:
     platform_allow:
-      - esp32s3_devkitc/esp32s3/procpu
+      - sr100_rdk/sr100/m55
     harness: console
     harness_config:
       type: one_line
       regex:
-        - "=== I2C Bus Scanner \\(ESP32-S3\\) ==="
+        - "=== I2C Bus Scanner \\(SR110\\) ==="

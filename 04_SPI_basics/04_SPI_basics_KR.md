@@ -4,6 +4,8 @@
 >
 > 그 외에 폴더 구성에 나열되어 있지만 본문에 내용이 없던 `CMakeLists.txt`, `sample.yaml`을 채워 넣었고, 코드/오버레이/커스텀 바인딩은 Zephyr 공식 문서·소스로 교차 확인한 결과 그대로 두어도 되는 내용이라 손대지 않았습니다. 자세한 근거는 문서 맨 아래 "검토 결과 요약"에 정리했습니다.
 
+> **SR110 포팅 노트 (2026-09-01)**: 원래 ESP32-S3-DevKitC-1용으로 작성된 랩입니다. I2C/SPI 개념 비교(아래 절)는 플랫폼 무관하게 그대로 유효하지만, **SR110에는 ESP32-S3식 GPIO 매트릭스가 없어 "같은 핀을 MOSI/MISO로 동시에 매핑"하는 소프트웨어 트릭 자체가 불가능**합니다. 대신 실제 점퍼선으로 MOSI-MISO를 연결해야 합니다. 그리고 SR110의 유일한 SPI 마스터(SPI0)를 켜면 보드 기본 콘솔 UART가 전부 막히는 하드웨어 제약이 있어, 콘솔을 다른 UART 핀 그룹으로 옮겨야 합니다 — 아래 "SPI0/콘솔 충돌" 절 참고.
+
 ## 이 실습에서 배우는 것
 
 원래 계획엔 "SPI 스캐너"가 있었는데, 검토 결과 **SPI는 구조적으로 I2C 같은 스캔이 불가능**합니다. 이 실습은 그 이유를 이해하고, 대신 **SPI 버스 자체가 정상 동작하는지 확인하는 루프백(loopback) 자가진단**을 만들어봅니다.
@@ -30,22 +32,39 @@
 
 MOSI(마스터가 보내는 선)와 MISO(마스터가 받는 선)를 **물리적으로 점퍼선을 연결하거나, 아예 같은 GPIO 핀을 핀먹스 레벨에서 공유**시키면, 내가 보낸 데이터가 그대로 되돌아옵니다. 데이터가 정확히 일치하면 "적어도 SPI 페리페럴과 클럭, 핀 라우팅은 정상"이라는 걸 확인할 수 있습니다.
 
-이번 실습은 **점퍼선 없이**, 오버레이에서 MISO와 MOSI를 같은 GPIO(8번)에 매핑하는 방식을 씁니다. ESP32-S3의 GPIO 매트릭스는 입력 라우팅과 출력 라우팅을 핀 단위로 독립적으로 설정할 수 있어서, 같은 물리 핀을 "SPI2 출력(MOSI)"이자 동시에 "SPI2 입력(MISO)"으로 쓸 수 있습니다 — 마스터가 MOSI로 내보낸 신호가 그 즉시 같은 핀에서 MISO로 읽히는 구조입니다.
+원래 ESP32-S3 버전은 **점퍼선 없이**, 오버레이에서 MISO와 MOSI를 같은 GPIO(8번)에 매핑하는 방식을 썼습니다. ESP32-S3의 GPIO 매트릭스는 입력 라우팅과 출력 라우팅을 핀 단위로 독립적으로 설정할 수 있어서, 같은 물리 핀을 "SPI2 출력(MOSI)"이자 동시에 "SPI2 입력(MISO)"으로 쓸 수 있었습니다.
+
+**SR110은 이 트릭을 쓸 수 없습니다.** SoC 패키지 단에서 각 pad의 alternate function이 고정돼 있어서, MOSI와 MISO는 처음부터 서로 다른 물리 핀입니다. 그래서 SR110 버전은 **물리적인 점퍼선으로 MOSI-MISO pad를 직접 연결**해야 합니다.
+
+## SPI0/콘솔 UART 충돌 — SR110의 가장 중요한 제약
+
+SR110은 SPI *마스터* 컨트롤러가 **SPI0 하나뿐**입니다(SPI1도 있지만 slave 전용이라 이 테스트에는 쓸 수 없습니다). 그런데 base devicetree(`sr100_rdk_m55.dts`)에 이미 다음과 같이 명시돼 있습니다:
+
+> "the default pinmux configuration for this board uses GP23/GP24 for UART1_TX/UART1_RX respectively, which conflicts with the spi_mstr_mosi/spi_mstr_miso muxes."
+
+즉 SPI0의 MOSI/MISO/CLK/CS 4개 신호가 각각 UART1_TX, UART1_RX, UART0_RX, UART0_TX와 **정확히 같은 물리 pad**를 alternate function으로 공유합니다. SPI0를 켜면 보드 기본 콘솔(UART1, GPIO23/24, J25 헤더로 외부 USB-TTL 연결)이 통째로 못 쓰게 됩니다.
+
+**해결책**: Synaptics 공식 SDK의 `samples/dma/sr100_rdk_m55.overlay`가 정확히 이 문제를 겪고, 콘솔을 UART0의 *대체* 핀 그룹(`uart0_tx_c`/`uart0_rx_c`, GLOBAL 핀 도메인 — 기본 그룹인 `uart0_tx_b`/`uart0_rx_b`는 spi_mstr_clk/cs와 또 겹치므로 안 됨)으로 옮겨서 이 충돌을 회피한 것을 확인했습니다. 이 랩의 오버레이도 동일한 패턴을 따릅니다.
+
+> ✅ **회로도로 확정 (SC950-C01116-01 RevE, 10번 시트 "PIN HEADERS, JTAG, DMIC")**: `uart0_tx_c`는 SoC 핀 **GPIO44**, `uart0_rx_c`는 **GPIO45**이고, 둘 다 **J24("Right 20pin CONN") 13/14번 핀**에 나와 있습니다(TX=13번, RX=14번). 외부 USB-TTL 어댑터의 RX를 J24 13번, TX를 J24 14번, GND를 보드 GND에 연결하면 콘솔 로그를 볼 수 있습니다. 보드 기본 콘솔 경로(UART1, J25 13/14번 핀 = GPIO23/24)와는 다른 헤더이니 혼동하지 마십시오 — SPI0가 이 랩에서 GPIO23/24를 가져가므로 J25 쪽 콘솔은 죽습니다.
+>
+> **MOSI-MISO 점퍼선 위치도 회로도로 확정**: `spi_mstr_mosi`=GPIO23, `spi_mstr_miso`=GPIO24이고 둘 다 **J25("Left 20pin CONN") 13/14번 핀**에 나와 있습니다(MISO=13번, MOSI=14번). **J25 13번과 14번 핀을 점퍼선으로 직결**하면 됩니다.
 
 ## 준비물
 
-- 별도 하드웨어 불필요 (순수 소프트웨어/핀먹스 루프백)
+- MOSI-MISO 점퍼선 1개 (J25 13번-14번 핀 직결, SR110은 ESP32-S3와 달리 소프트웨어 루프백이 불가능하므로 필수)
+- 콘솔 확인용 외부 USB-TTL 어댑터 (J24 13/14번 핀 연결, 위 "SPI0/콘솔 UART 충돌" 절 참고)
 
 ## 폴더 구성
 
 ```
 Zephyr_display/
-└── 03_SPI_basics/
+└── 04_SPI_basics/
     ├── lab/
     │   ├── src/
     │   │   └── main.c
     │   ├── boards/
-    │   │   └── esp32s3_devkitc_esp32s3_procpu.overlay
+    │   │   └── sr100_rdk_sr100_m55.overlay
     │   ├── dts/
     │   │   └── bindings/
     │   │       └── spi/
@@ -53,33 +72,18 @@ Zephyr_display/
     │   ├── CMakeLists.txt
     │   ├── prj.conf
     │   └── sample.yaml
-    └── 03_SPI_basics_KR.md
+    ├── 04_SPI_basics_KR.md
+    └── 04_SPI_basics_EN.md
 ```
 
 ## Devicetree Overlay
 
 ```dts
-&pinctrl {
-    spim2_loopback: spim2_loopback {
-        group1 {
-            pinmux = <SPIM2_MISO_GPIO8>;
-            output-enable;
-        };
-        group2 {
-            pinmux = <SPIM2_MOSI_GPIO8>;   /* MISO와 동일한 GPIO8 — 이게 핵심 */
-            input-enable;
-        };
-        group3 {
-            pinmux = <SPIM2_SCLK_GPIO12>, <SPIM2_CSEL_GPIO10>;
-        };
-    };
-};
-
-&spi2 {
+&spi0 {
     #address-cells = <1>;
     #size-cells = <0>;
     status = "okay";
-    pinctrl-0 = <&spim2_loopback>;
+    pinctrl-0 = <&spi_mstr_mosi &spi_mstr_miso &spi_mstr_clk &spi_mstr_cs>;
     pinctrl-names = "default";
 
     loopback_dev: loopback@0 {
@@ -88,9 +92,28 @@ Zephyr_display/
         spi-max-frequency = <1000000>;
     };
 };
+
+&ns16550_uart1 {
+    status = "disabled";
+};
+
+&ns16550_uart0 {
+    pinctrl-0 = <&uart0_tx_c &uart0_rx_c>;
+    pinctrl-names = "default";
+    current-speed = <230400>;
+    dlf = <2>;
+    status = "okay";
+};
+
+/ {
+    chosen {
+        zephyr,console = &ns16550_uart0;
+        zephyr,shell-uart = &ns16550_uart0;
+    };
+};
 ```
 
-MOSI와 MISO가 **같은 물리 핀(GPIO8)**에 매핑되어 있고, 한쪽은 `output-enable`, 다른 쪽은 `input-enable`로 설정된 게 보이시나요 — 이게 점퍼선 없이 루프백이 되는 원리입니다. SCK/CS는 각각 GPIO12/GPIO10을 씁니다 (다른 용도로 이미 쓰고 있는 핀이 아니라면 임의로 골라도 되는 자리이니, 보드 리비전에 따라 실크스크린으로 한 번 확인하는 걸 권장합니다).
+SR110은 `spi_mstr_mosi`/`spi_mstr_miso`가 서로 다른 고정 pad이므로, 위 "준비물"에서 안내한 대로 **이 두 pad 사이를 실제 점퍼선으로 연결**해야 루프백이 성립합니다. 나머지(`uart1` disable + `uart0`를 `uart0_tx_c`/`uart0_rx_c`로 재설정)는 위 "SPI0/콘솔 UART 충돌" 절에서 설명한 콘솔 회피 조치입니다.
 
 ## 커스텀 devicetree 바인딩
 
@@ -128,7 +151,7 @@ CONFIG_SPI=y
 CONFIG_GPIO=y
 ```
 
-ESP32 SPI 드라이버(`CONFIG_ESP32_SPIM`)는 별도로 켜주지 않아도 됩니다 — devicetree에 `espressif,esp32-spi` 노드가 `status = "okay"`로 있으면 자동으로 `y`가 되도록 Kconfig에 정의되어 있습니다 (I2C 랩에서 `CONFIG_I2C_ESP32=y`를 명시했던 것과는 다른 부분이니 참고).
+`snps,designware-spi`(SR110의 SPI0 드라이버) 역시 devicetree에서 노드가 `status = "okay"`이면 자동으로 활성화되므로, ESP32 버전과 마찬가지로 별도의 `CONFIG_xxx_SPI=y` 심볼을 추가할 필요가 없습니다.
 
 ## sample.yaml
 
@@ -136,22 +159,22 @@ ESP32 SPI 드라이버(`CONFIG_ESP32_SPIM`)는 별도로 켜주지 않아도 됩
 sample:
   name: SPI basics - bus loopback self-test
   description: >
-    Verify the SPI2 (GPSPI2) peripheral, clock, and pin routing on the
-    ESP32-S3-DevKitC-1 using a devicetree-level loopback (MISO and MOSI
-    mapped to the same GPIO pad) - no jumper wire and no real SPI device
-    required.
+    Verify the SPI0 peripheral, clock, and pin routing on the Synaptics
+    SR110 (sr100_rdk/sr100/m55) using a physical MOSI-MISO jumper wire
+    loopback (SR110 has no ESP32-style software GPIO-matrix trick, so a
+    real jumper wire is required here).
 common:
   tags:
     - spi
   platform_allow:
-    - esp32s3_devkitc/esp32s3/procpu
+    - sr100_rdk/sr100/m55
   harness: console
   harness_config:
     type: one_line
     regex:
       - "PASS: received bytes match sent bytes.*"
 tests:
-  sample.spi.esp32s3_loopback:
+  sample.spi.sr110_loopback:
     build_only: true
 ```
 
@@ -227,13 +250,17 @@ int main(void) {
 
 ## 빌드 & 실행
 
-```bash
-west build -p always -b esp32s3_devkitc/esp32s3/procpu 03_SPI_basics/lab
-west flash
-west espressif monitor
+```powershell
+west build -p always -b sr100_rdk/sr100/m55 .\04_SPI_basics\lab\
 ```
 
-(PowerShell이면 `west build -p always -b esp32s3_devkitc/esp32s3/procpu .\03_SPI_basics\lab\` 형태로 경로만 바꿔주면 됩니다.)
+```bash
+python srsdk_tools/openocd_flash.py --openocd <openocd 경로> --flash-offset 0x0 \
+    --file-offset 0x0 --cfg_path srsdk_tools/Input_Config/sr100_m55.cfg \
+    --image build/zephyr/zephyr_flash.bin
+```
+
+콘솔은 위 "SPI0/콘솔 UART 충돌" 절에서 설명한 대로 UART0의 대체 핀(`uart0_tx_c`/`uart0_rx_c` = GPIO44/45)으로 옮겨져 있습니다 — 외부 USB-TTL 어댑터를 J24 13/14번 핀에 연결하고 **230400bps 8N1**로 여십시오.
 
 ## 실행 & 확인
 
@@ -256,23 +283,14 @@ PASS: received bytes match sent bytes - SPI peripheral, clock, and pin routing a
 
 | 증상 | 원인 / 해결 |
 |---|---|
-| `SPI device not ready` | 오버레이가 실제로 적용 안 됨 — 파일명이 board target과 일치하는지 확인 |
-| `spi_transceive_dt failed` | SPI 버스 자체 설정 문제 — `west build -t devicetree`로 `&spi2` 노드가 제대로 병합됐는지 확인 |
-| Sent와 Received가 다름 | MISO/MOSI가 정말 같은 GPIO에 매핑됐는지 오버레이 재확인 — 다른 핀으로 되어 있으면 루프백이 안 됩니다 |
+| `SPI device not ready` | 오버레이가 실제로 적용 안 됨 — 오버레이 파일명(`sr100_rdk_sr100_m55.overlay`)이 west board target과 일치하는지 확인 |
+| `spi_transceive_dt failed` | SPI 버스 자체 설정 문제 — `west build -t devicetree`로 `&spi0` 노드가 제대로 병합됐는지 확인 |
+| Sent와 Received가 다름 | MOSI-MISO 점퍼선이 실제로 연결됐는지 확인 (SR110은 소프트웨어 루프백이 안 되므로 점퍼선이 필수) |
+| 콘솔에 아무 출력도 안 보임 | UART0의 대체 핀(`uart0_tx_c`/`uart0_rx_c`)에 외부 USB-TTL 어댑터를 연결했는지, 보드 기본 J25/GPIO23-24 쪽을 보고 있는 건 아닌지 확인 — SPI0가 켜지면 그쪽 콘솔은 죽습니다 |
 | Devicetree 바인딩을 못 찾음 (`'zds,spi-loopback' compatible not found`) | `CMakeLists.txt`의 `list(APPEND DTS_ROOT ...)`가 `find_package(Zephyr...)` 이전에 있는지 확인 |
-| 빌드 시 `SPIM2_MISO_GPIO8` 등 매크로를 못 찾는다는 에러 | 아래 "검토 결과 요약" 참고 — 매크로 이름 자체는 정상적인 명명 규칙을 따르고 있지만 실기 빌드로 최종 확인은 필요 |
 
 ## 다음
 
-4번 실습(`04_OLED_SSD1306_SPI`)에서 이번에 확인한 SPI 버스 위에 실제 OLED(SSD1306 SPI 모드)를 연결합니다.
+5번 실습(`05_OLED_SSD1306_SPI`)에서 이번에 확인한 SPI0 버스 위에 실제 OLED(SSD1306 SPI 모드)를 연결합니다.
 
 ---
-
-## 검토 결과 요약
-
-이 문서를 전달하기 전에 다음을 Zephyr 공식 문서/소스로 교차 확인했습니다.
-
-- **`&spi2` 라벨과 `compatible`**: ESP32-S3 SoC devicetree에 `spi2`(베이스 주소 0x60024000, GPSPI2)와 `spi3`(0x60025000, GPSPI3) 두 노드가 모두 `compatible = "espressif,esp32-spi"`, 기본 `status = "disabled"`로 존재함을 확인했습니다. 오버레이에서 `status = "okay"`로 켜는 방식은 I2C0 랩과 동일한 패턴입니다.
-- **`CONFIG_ESP32_SPIM` 자동 활성화**: Zephyr의 `drivers/spi/Kconfig.esp32`에서 `ESP32_SPIM`이 `depends on DT_HAS_ESPRESSIF_ESP32_SPI_ENABLED` + `default y`로 정의되어 있음을 확인했습니다. 즉 devicetree에서 SPI 노드를 켜기만 하면 드라이버가 자동으로 활성화되므로, prj.conf에 `CONFIG_SPI=y`만 있어도 충분합니다 (I2C 랩처럼 `CONFIG_xxx_ESP32=y`를 별도로 안 넣어도 됨).
-- **핀먹스 매크로 명명 규칙**: `esp32s3-pinctrl.h`에서 I2S 관련 신호들이 `<PERIPHERAL>_<SIGNAL>_GPIO<N>` 형태(예: `I2S1_MCLK_GPIO8`)로 모든 GPIO 번호에 대해 기계적으로 생성되어 있는 것을 확인했습니다. `SPIM2_MISO_GPIO8`류 매크로도 같은 규칙을 따를 가능성이 매우 높지만, 파일이 매우 커서 SPI 항목까지 직접 원문으로 확인하지는 못했습니다 — **처음 빌드할 때 이 부분만 한 번 확인**해 주세요. 매크로 이름이 틀렸다면 devicetree 컴파일 단계에서 바로 "undeclared" 류 에러로 나오기 때문에 하드웨어를 잘못 짚는 것과 달리 원인 파악이 즉각적입니다.
-- **"같은 GPIO로 MOSI/MISO 매핑" 기법 자체**: ESP32/ESP32-S3 GPIO 매트릭스가 핀 단위로 입력·출력 신호 라우팅을 독립적으로 지정할 수 있다는 구조상 타당한 접근입니다. 다만 Zephyr 공식 `tests/drivers/spi/spi_loopback` 저장소에서 ESP32 계열 보드가 실제로 이 방식을 쓰는지는 저장소 탐색 제약으로 직접 확인하지 못했습니다 — 원 문서의 "Zephyr 공식 테스트에서 쓰는 기법"이라는 서술은 참고용으로만 보시고, 이 랩 자체의 정당성은 위 GPIO 매트릭스 구조로 판단하시면 됩니다.

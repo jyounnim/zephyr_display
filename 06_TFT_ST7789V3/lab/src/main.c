@@ -2,17 +2,38 @@
  * Lab 06: ST7789V3 1.69" 240x280 color TFT, raw SPI, no Zephyr
  * Display/CFB subsystem.
  *
- * Board: ESP32-S3-DevKitC-1 (esp32s3_devkitc/esp32s3/procpu)
- * Bus:   SPI2 (GPSPI2), hardware CS0. SCLK=GPIO14, MOSI=GPIO13,
- *        CS0=GPIO15, RST=GPIO16, DC=GPIO17 - the same SPI2 pin
- *        assignment as this series' ST7735 lab, reused as-is since
- *        both are write-only color SPI TFTs with the same RST/DC
- *        wiring needs.
+ * Board: Synaptics SR110 (sr100_rdk/sr100/m55)
+ * Bus:   SPI0 (only SPI *master* on this SoC - spi1 is slave-only),
+ *        native hardware CS (spi_mstr_cs pinctrl, no cs-gpios) - the
+ *        same CS mechanism confirmed working on real hardware by
+ *        Lab 05 (SSD1306 SPI, using Zephyr's own in-tree display
+ *        driver). See the devicetree overlay for the UART console
+ *        conflict this creates (SPI0 shares pads with UART0/UART1's
+ *        default pins on this board) and how it's worked around.
  *
  * This lab talks to the ST7789V3 controller directly with raw SPI
  * writes (command/data selected via the DC pin), the same style used
  * throughout this series for SPI displays, rather than going through
  * Zephyr's built-in "sitronix,st7789v" display driver.
+ *
+ * SR110 PORTING HISTORY: an earlier version of this file chased a
+ * blank-screen symptom through several dead ends - software
+ * (GPIO-based) CS, manually holding CS low across an entire RAMWR
+ * burst, forcing spi_transceive_dt() (TX+RX) instead of spi_write_dt()
+ * (TX-only) - none of which were the actual problem. Lab 05 succeeding
+ * with plain native CS and ordinary per-call SPI writes (via Zephyr's
+ * own SSD1306 driver) on the exact same SPI0 bus showed that none of
+ * that machinery was necessary. This version drops all of it and
+ * reuses Lab 05's proven-working RST/DC pins (GPIO17/18) instead of
+ * this lab's earlier, still-unverified GPIO27/28/29/4 choices.
+ *
+ * The one genuinely hardware-confirmed fix that remains: SR110's SPI0
+ * hardware FIFO is only 8 bytes deep (`fifo-depth = <8>;` in
+ * sr100_m55.dtsi), and a single spi_write_dt() call needing a
+ * mid-transfer TX-FIFO-refill interrupt to complete (i.e. any single
+ * call over 8 bytes) reproducibly times out (-ETIMEDOUT / errno 116)
+ * instead of that refill interrupt ever firing. Every send below is
+ * chunked to <= 8 bytes to avoid ever needing that refill.
  *
  * PANEL RAM OFFSET: the ST7789 controller's native GRAM is 240x320.
  * This particular module's visible glass is only 240x280, centered
@@ -30,12 +51,30 @@
  * troubleshooting doc for the MADCTL bits to flip.
  */
 
+/*
+ * SR110 DEBUG STEP (2026-09-03): comprehensive init sequence (matching
+ * Lab 08's approach) still didn't produce a visible image - screen
+ * stays black, log completes with no error, same as every previous
+ * attempt. Since SPI0/CS/pins/chunking are all independently proven
+ * working (Lab 05, Lab 08), the next untested hypothesis is DC
+ * polarity: if this specific module's DC line is wired/expects the
+ * opposite sense from the conventional "low=command, high=data" (some
+ * clone boards do), every command byte would land in the panel's data
+ * path and vice versa - the panel would never see a valid SWRESET/
+ * DISPON, explaining a permanently-black screen with no bus-level
+ * error. The overlay's dc-gpios flag has been flipped to
+ * GPIO_ACTIVE_LOW to test this without any code or wiring change -
+ * gpio_pin_set_dt() below still calls with the same 0=command/1=data
+ * values, but the physical HIGH/LOW meaning is now inverted.
+ */
+
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/sys/util.h>
 #include <stdbool.h>
 
 #define DISP_NODE DT_NODELABEL(st7789v_disp)
@@ -46,16 +85,27 @@
 #define Y_OFFSET      DT_PROP(DISP_NODE, y_offset)
 
 /* ST7789 command set (only what this lab needs). */
-#define ST7789_SWRESET 0x01
-#define ST7789_SLPOUT  0x11
-#define ST7789_COLMOD  0x3A
-#define ST7789_MADCTL  0x36
-#define ST7789_INVON   0x21
-#define ST7789_NORON   0x13
-#define ST7789_DISPON  0x29
-#define ST7789_CASET   0x2A
-#define ST7789_RASET   0x2B
-#define ST7789_RAMWR   0x2C
+#define ST7789_SWRESET  0x01
+#define ST7789_SLPOUT   0x11
+#define ST7789_COLMOD   0x3A
+#define ST7789_MADCTL   0x36
+#define ST7789_INVON    0x21
+#define ST7789_NORON    0x13
+#define ST7789_DISPON   0x29
+#define ST7789_CASET    0x2A
+#define ST7789_RASET    0x2B
+#define ST7789_RAMWR    0x2C
+#define ST7789_PORCTRL  0xB2
+#define ST7789_GCTRL    0xB7
+#define ST7789_VCOMS    0xBB
+#define ST7789_LCMCTRL  0xC0
+#define ST7789_VDVVRHEN 0xC2
+#define ST7789_VRHS     0xC3
+#define ST7789_VDVS     0xC4
+#define ST7789_FRCTRL2  0xC6
+#define ST7789_PWCTRL1  0xD0
+#define ST7789_PVGAMCTRL 0xE0
+#define ST7789_NVGAMCTRL 0xE1
 
 /* RGB565 colors used by the demo pattern. */
 #define COLOR_BLACK   0x0000
@@ -107,22 +157,47 @@ static const uint8_t *glyph_lookup(char c)
 	return blank;
 }
 
+/* SR110: SPI0's hardware FIFO is only 8 bytes deep - see the file
+ * header comment. Every send chunks to this size, letting native CS
+ * (spi_write_dt() asserts/releases it automatically per call, exactly
+ * like Lab 05's SSD1306 writes) toggle normally between chunks -
+ * confirmed fine on this hardware, unlike the software-CS-continuity
+ * detour an earlier version of this file took.
+ */
+#define ST7789_CHUNK_BYTES 8
+
+static int st7789_send(int dc_value, const uint8_t *data, size_t len)
+{
+	int ret;
+
+	gpio_pin_set_dt(&dc_spec, dc_value);
+
+	while (len) {
+		size_t chunk = MIN(len, ST7789_CHUNK_BYTES);
+		struct spi_buf buf = { .buf = (void *)data, .len = chunk };
+		struct spi_buf_set set = { .buffers = &buf, .count = 1 };
+
+		ret = spi_write_dt(&spi_spec, &set);
+		if (ret) {
+			printk("  spi_write_dt(dc=%d, len=%zu) failed, ret=%d\n",
+			       dc_value, chunk, ret);
+			return ret;
+		}
+		data += chunk;
+		len -= chunk;
+	}
+
+	return 0;
+}
+
 static int st7789_write_cmd(uint8_t cmd)
 {
-	struct spi_buf buf = { .buf = &cmd, .len = 1 };
-	struct spi_buf_set set = { .buffers = &buf, .count = 1 };
-
-	gpio_pin_set_dt(&dc_spec, 0); /* command mode */
-	return spi_write_dt(&spi_spec, &set);
+	return st7789_send(0, &cmd, 1);
 }
 
 static int st7789_write_data(const uint8_t *data, size_t len)
 {
-	struct spi_buf buf = { .buf = (void *)data, .len = len };
-	struct spi_buf_set set = { .buffers = &buf, .count = 1 };
-
-	gpio_pin_set_dt(&dc_spec, 1); /* data mode */
-	return spi_write_dt(&spi_spec, &set);
+	return st7789_send(1, data, len);
 }
 
 static int st7789_reset(void)
@@ -141,45 +216,66 @@ static int st7789_reset(void)
 	return 0;
 }
 
-/* Standard ST7789 init sequence (16bpp RGB565, display inversion on -
- * required by most ST7789 glass to show correct, non-inverted colors).
+/* SR110 DEBUG STEP (2026-09-03): Lab 08 (ST7735), using a full
+ * power/frame-rate/gamma init sequence, works correctly on this exact
+ * SPI0/CS/pin/chunking setup. This lab's original init sequence was
+ * the bare MIPI-DCS minimum (SWRESET/SLPOUT/COLMOD/MADCTL/INVON/NORON/
+ * DISPON only, no porch/gate/VCOM/power/gamma setup at all) and never
+ * produced a visible image despite completing without any SPI error -
+ * consistent with a panel that's technically responding to commands
+ * but never gets its analog/timing configured well enough to actually
+ * drive the glass. Replaced with a standard, widely-used ST7789V init
+ * table (cross-checked against ESPHome's st7789v component, Bodmer's
+ * TFT_eSPI library, and Adafruit's Raspberry Pi fbtft driver, which
+ * all agree on this sequence/these values) in the same
+ * (command, args, delay) table style as Lab 08, for easy comparison.
  */
+struct st7789_init_cmd {
+	uint8_t cmd;
+	uint8_t num_args;
+	uint8_t args[16];
+	uint16_t delay_ms;
+};
+
+static const struct st7789_init_cmd init_seq[] = {
+	{ ST7789_SWRESET,   0, {0}, 150 },
+	{ ST7789_SLPOUT,    0, {0}, 255 },
+	{ ST7789_COLMOD,    1, {0x55}, 10 },
+	{ ST7789_PORCTRL,   5, {0x0C, 0x0C, 0x00, 0x33, 0x33}, 0 },
+	{ ST7789_GCTRL,     1, {0x35}, 0 },
+	{ ST7789_VCOMS,     1, {0x28}, 0 },
+	{ ST7789_LCMCTRL,   1, {0x0C}, 0 },
+	{ ST7789_VDVVRHEN,  2, {0x01, 0xFF}, 0 },
+	{ ST7789_VRHS,      1, {0x10}, 0 },
+	{ ST7789_VDVS,      1, {0x20}, 0 },
+	{ ST7789_FRCTRL2,   1, {0x0F}, 0 },
+	{ ST7789_PWCTRL1,   2, {0xA4, 0xA1}, 0 },
+	{ ST7789_MADCTL,    1, {0x00}, 0 },
+	{ ST7789_INVON,     0, {0}, 10 },
+	{ ST7789_PVGAMCTRL, 14, {0xD0, 0x00, 0x02, 0x07, 0x0A, 0x28, 0x32, 0x44,
+				 0x42, 0x06, 0x0E, 0x12, 0x14, 0x17}, 0 },
+	{ ST7789_NVGAMCTRL, 14, {0xD0, 0x00, 0x02, 0x07, 0x05, 0x25, 0x2D, 0x44,
+				 0x45, 0x10, 0x0E, 0x12, 0x13, 0x17}, 0 },
+	{ ST7789_NORON,     0, {0}, 10 },
+	{ ST7789_DISPON,    0, {0}, 100 },
+};
+
 static int st7789_init(void)
 {
 	int ret;
-	uint8_t colmod = 0x55;   /* 16 bits/pixel */
-	uint8_t madctl = 0x00;   /* orientation/RGB order - see troubleshooting doc */
 
-	ret = st7789_write_cmd(ST7789_SWRESET);
-	if (ret) return ret;
-	k_sleep(K_MSEC(150));
+	for (size_t i = 0; i < ARRAY_SIZE(init_seq); i++) {
+		ret = st7789_write_cmd(init_seq[i].cmd);
+		if (ret) return ret;
 
-	ret = st7789_write_cmd(ST7789_SLPOUT);
-	if (ret) return ret;
-	k_sleep(K_MSEC(255));
-
-	ret = st7789_write_cmd(ST7789_COLMOD);
-	if (ret) return ret;
-	ret = st7789_write_data(&colmod, 1);
-	if (ret) return ret;
-	k_sleep(K_MSEC(10));
-
-	ret = st7789_write_cmd(ST7789_MADCTL);
-	if (ret) return ret;
-	ret = st7789_write_data(&madctl, 1);
-	if (ret) return ret;
-
-	ret = st7789_write_cmd(ST7789_INVON);
-	if (ret) return ret;
-	k_sleep(K_MSEC(10));
-
-	ret = st7789_write_cmd(ST7789_NORON);
-	if (ret) return ret;
-	k_sleep(K_MSEC(10));
-
-	ret = st7789_write_cmd(ST7789_DISPON);
-	if (ret) return ret;
-	k_sleep(K_MSEC(100));
+		if (init_seq[i].num_args) {
+			ret = st7789_write_data(init_seq[i].args, init_seq[i].num_args);
+			if (ret) return ret;
+		}
+		if (init_seq[i].delay_ms) {
+			k_sleep(K_MSEC(init_seq[i].delay_ms));
+		}
+	}
 
 	return 0;
 }
@@ -280,7 +376,7 @@ int main(void)
 	printk("\n=== TFT ST7789V3 (SPI, 240x%d) ===\n", PANEL_HEIGHT);
 
 	if (!spi_is_ready_dt(&spi_spec)) {
-		printk("SPI2 device not ready - check devicetree status/overlay\n");
+		printk("SPI0 device not ready - check devicetree status/overlay\n");
 		return 0;
 	}
 	if (!gpio_is_ready_dt(&reset_spec) || !gpio_is_ready_dt(&dc_spec)) {
@@ -294,7 +390,7 @@ int main(void)
 	}
 
 	if (st7789_reset()) {
-		printk("Panel reset failed - check RST wiring (gpio0 16)\n");
+		printk("Panel reset failed - check RST wiring\n");
 		return 0;
 	}
 
@@ -314,11 +410,12 @@ int main(void)
 	static const uint16_t bar_colors[] = {
 		COLOR_RED, COLOR_GREEN, COLOR_BLUE, COLOR_YELLOW, COLOR_CYAN, COLOR_MAGENTA, COLOR_WHITE,
 	};
-	uint16_t bars_top = 40;
-	uint16_t bar_height = (PANEL_HEIGHT - bars_top) / ARRAY_SIZE(bar_colors);
+	uint16_t bar_height = PANEL_HEIGHT / (ARRAY_SIZE(bar_colors) + 2);
+	uint16_t bars_top = PANEL_HEIGHT - (bar_height * ARRAY_SIZE(bar_colors));
 
 	for (size_t i = 0; i < ARRAY_SIZE(bar_colors); i++) {
-		if (st7789_fill_rect(0, bars_top + i * bar_height, PANEL_WIDTH, bar_height, bar_colors[i])) {
+		if (st7789_fill_rect(0, bars_top + i * bar_height, PANEL_WIDTH, bar_height,
+				      bar_colors[i])) {
 			printk("Fill (color bar %zu) failed\n", i);
 			return 0;
 		}

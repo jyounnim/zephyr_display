@@ -1,0 +1,31 @@
+/*
+ * Synaptics SR110 (sr100_rdk/sr100/m55): enable I2C0 for the PCF8574
+ * I2C-backpack character LCD.
+ *
+ * Same I2C0 pin group as Lab 01 (i2c0_ms_scl / i2c0_ms_sda) - this
+ * series standardizes all external I2C wiring on I2C0, since I2C1 is
+ * already committed to onboard peripherals (GPIO expander, accelerometer,
+ * camera). See Lab 01's overlay comment for the full rationale.
+ *
+ * No child devicetree node for the LCD: this lab talks to the PCF8574
+ * backpack directly over raw I2C (main.c uses i2c_write() with the
+ * address picked at runtime from a bus scan), so there is no Zephyr
+ * driver to bind a node to - identical to the original ESP32-S3 version.
+ *
+ * clock-frequency is left at the standard 100 kHz, matching Lab 01.
+ */
+
+&i2c0_ms_scl {
+	bias-pull-up;
+};
+
+&i2c0_ms_sda {
+	bias-pull-up;
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	pinctrl-0 = <&i2c0_ms_scl &i2c0_ms_sda>;
+	pinctrl-names = "default";
+};

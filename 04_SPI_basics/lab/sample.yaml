@@ -1,20 +1,20 @@
 sample:
   name: SPI basics - bus loopback self-test
   description: >
-    Verify the SPI2 (GPSPI2) peripheral, clock, and pin routing on the
-    ESP32-S3-DevKitC-1 using a devicetree-level loopback (MISO and MOSI
-    mapped to the same GPIO pad) - no jumper wire and no real SPI device
-    required.
+    Verify the SPI0 peripheral, clock, and pin routing on the Synaptics
+    SR110 (sr100_rdk/sr100/m55) using a physical MOSI-MISO jumper wire
+    loopback (SR110 has no ESP32-style software GPIO-matrix trick, so a
+    real jumper wire is required here).
 common:
   tags:
     - spi
   platform_allow:
-    - esp32s3_devkitc/esp32s3/procpu
+    - sr100_rdk/sr100/m55
   harness: console
   harness_config:
     type: one_line
     regex:
       - "PASS: received bytes match sent bytes.*"
 tests:
-  sample.spi.esp32s3_loopback:
+  sample.spi.sr110_loopback:
     build_only: true

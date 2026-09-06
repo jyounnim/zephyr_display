@@ -1,0 +1,35 @@
+/*
+ * Synaptics SR110 (sr100_rdk/sr100/m55): enable I2C0 for the bus scanner.
+ *
+ * SR110's SoC package fixes each pin's alternate functions (unlike
+ * ESP32-S3's software-configurable GPIO matrix), so there is no
+ * equivalent of "pinmux = <I2C0_SDA_GPIO8>" - I2C0 has exactly one pin
+ * group, already named by the SoC pinctrl driver: i2c0_ms_scl /
+ * i2c0_ms_sda (no "_b" suffix - that suffix is reserved for I2C1's
+ * alternate pin group). I2C0 ships status = "disabled" with no default
+ * pinctrl-0, so both must be supplied here.
+ *
+ * I2C0's pin group lives on its own LPS_GEAR1 mux slot, independent of
+ * SPI0/UART0/UART1's shared pin group - no console/UART conflict here,
+ * unlike the SPI labs (04/05/07/08) in this series.
+ *
+ * I2C1 is already committed by the base board devicetree to the onboard
+ * PCA6416A GPIO expander (LEDs/buttons), MC3419/MC3479 accelerometer,
+ * and OV02C10 camera - use I2C0 for all external I2C wiring in this lab
+ * series instead, to avoid disturbing those.
+ */
+
+&i2c0_ms_scl {
+	bias-pull-up;
+};
+
+&i2c0_ms_sda {
+	bias-pull-up;
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	pinctrl-0 = <&i2c0_ms_scl &i2c0_ms_sda>;
+	pinctrl-names = "default";
+};

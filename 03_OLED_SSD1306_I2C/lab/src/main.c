@@ -2,90 +2,78 @@
  * Lab 03: SSD1306 0.96" OLED, I2C mode, with runtime address
  * auto-detection - raw I2C, no Zephyr Display/CFB subsystem.
  *
- * Board: ESP32-S3-DevKitC-1 (esp32s3_devkitc/esp32s3/procpu)
- * Bus:   I2C0, SDA = GPIO8, SCL = GPIO9 (series-wide GPIO8/9 pin,
- *        see the overlay and Lab 01's doc for why this overrides the
- *        board default GPIO1/GPIO2).
+ * Board: Synaptics SR110 (sr100_rdk/sr100/m55)
+ * Bus:   I2C0 (pin group i2c0_ms_scl/i2c0_ms_sda) - same bus as Labs
+ *        01/02, independent of SPI0/UART0/UART1's shared pin group.
  *
- * THIS IS A FRESH REWRITE, not the earlier parked I2C SSD1306 attempt
- * (that one is still recorded separately in the roadmap as "parked").
- * This version is based on a confirmed-working reference implementation
- * built for a different board (Synaptics SR110) that reached a
- * successful "Hello World!" on real SSD1306 I2C hardware, then adapted
- * here for the ESP32-S3. Three things carried over unchanged because
- * they fix real, previously-reproduced bugs rather than being
- * platform-specific quirks:
+ * WHY RAW I2C INSTEAD OF ZEPHYR'S "solomon,ssd1306" DRIVER:
+ * SSD1306 modules ship at one of two 7-bit addresses depending on how
+ * the module's SA0 pin is strapped - 0x3C or 0x3D. A devicetree node's
+ * `reg` property is fixed at build time, so the standard driver can
+ * only target one address per build. This lab's whole point is to
+ * *scan* for whichever address is actually present at boot (same
+ * pattern as Lab 01's bus scanner) and use that - so it talks to the
+ * controller directly with i2c_write(), the same approach Lab 02 used
+ * for the raw-I2C PCF8574 LCD backpack.
  *
- *   1. The whole framebuffer is sent as ONE i2c_write() over a single
- *      contiguous buffer (control byte + 1024 pixel bytes), instead of
- *      a two-message i2c_transfer() (control byte message, then
- *      payload message). On the reference platform, two-message
- *      transfers produced a screen full of noise - the working theory
- *      is that some I2C controllers insert an unwanted STOP/restart
- *      between the two messages, so the SSD1306 sees a lone control
- *      byte, then a second transaction whose first byte gets misread as
- *      a new control byte instead of pixel data, shifting everything
- *      after it by one and effectively randomizing which bytes are
- *      commands vs. data. A single contiguous write sidesteps the
- *      question entirely for any I2C driver, so it is kept here too as
- *      the safer default even though it hasn't specifically been shown
- *      to matter on ESP32-S3's I2C driver.
- *   2. A boot settle delay (100 ms) plus a few retries per candidate
- *      address before giving up on it. SSD1306 modules need a moment
- *      after power-up before they reliably ACK on the bus; probing
- *      immediately after i2c0 becomes ready can spuriously report "not
- *      found" on a module that would otherwise scan fine a beat later.
- *   3. The overall structure: scan first (0x3C then 0x3D), remember
- *      whichever address responds, then use that address for every
- *      subsequent command/data write - since a devicetree node's `reg`
- *      is fixed at build time and can't do this, there is no child
- *      node for the OLED here; every I2C transaction is issued
- *      directly from this file.
+ * I2C PROTOCOL: every SSD1306 I2C transaction starts with a control
+ * byte after the device address - 0x00 selects a command stream, 0x40
+ * selects a GDDRAM (pixel data) stream. This lab sends one command per
+ * transaction (control byte + 1 command byte), and the whole 1024-byte
+ * framebuffer as a single transaction too (control byte + 1024 data
+ * bytes, copied into one contiguous static buffer and sent with one
+ * i2c_write() call - see ssd1306_data()'s comment for why a two-message
+ * i2c_transfer() was tried first and abandoned after it produced a
+ * screen full of noise on real hardware).
  *
- * One thing was deliberately NOT carried over: the reference probed
- * with a 1-byte i2c_read() because write-based probing was shown to
- * miss real devices on that platform's I2C driver. This project's own
- * Lab 01 (I2C bus scanner) and Lab 02 (I2C LCD) already established
- * write-based probing (a 1-byte i2c_write() with no payload) as
- * reliable on the ESP32-S3's I2C driver, so this lab keeps that
- * convention instead of switching styles.
+ * ADDRESS PROBING: uses a 1-byte i2c_read() per candidate address, the
+ * same probe style established in Lab 01 - on this platform's I2C
+ * driver, a write-based probe is confirmed to miss real devices, while
+ * i2c_read() reliably reports ACK/NACK.
+ *
+ * INIT SEQUENCE: a standard 128x64 SSD1306 init sequence (internal
+ * charge pump enabled, since almost all breakout modules have no
+ * external Vcc supply for the panel), horizontal addressing mode,
+ * segment remap + COM scan direction remapped to match how the glass
+ * is typically bonded onto these breakout boards right-side-up.
  *
  * HARDWARE RESET (RES) PIN: some SSD1306 breakout modules expose a
  * RES/RST pin that needs a low-then-high pulse before I2C commands are
- * sent, or the panel can show scattered dot noise indefinitely even
- * though the software init sequence completes without error. Most
- * low-cost 4-pin (VCC/GND/SDA/SCL) modules - the common case - have no
- * such pin at all and don't need any of this, so OLED_USE_HW_RESET
- * defaults to 0 here.
+ * sent, or the panel shows scattered dot noise indefinitely even
+ * though the software init sequence completes without error (see
+ * ssd1306_init()'s comment). Most low-cost 4-pin (VCC/GND/SDA/SCL)
+ * modules - the common case, e.g. typical AliExpress modules - have no
+ * such pin at all and don't need any of this (leave OLED_USE_HW_RESET
+ * at 0 if that's your module).
  *
- * If your module DOES have an RST pin, there are two ways to drive it:
- *
- *   A. (RECOMMENDED, confirmed on real hardware) Wire the module's RST
- *      straight to the dev board's own RST/EN pin instead of a GPIO.
- *      The OLED then resets physically in lockstep with the board on
- *      every power-up/reset/reflash - no code involved at all, keep
- *      OLED_USE_HW_RESET at 0 and leave oled_hw_reset() unused. This
- *      also costs zero extra GPIOs.
- *   B. (fallback, NOT yet validated on ESP32-S3) Wire RST to the GPIO
- *      below and flip OLED_USE_HW_RESET to 1, for cases where the
- *      board's RST/EN pin isn't available to wire to (e.g. already
- *      committed to something else). Double-check the chosen GPIO
- *      isn't in use elsewhere on your wiring before relying on it.
- *
- * PIN SAFETY NOTE: don't assume a GPIO is free just because nothing in
- * this lab uses it. On the ESP32-S3-DevKitC-1, avoid the strapping
- * pins (GPIO0, GPIO3, GPIO45, GPIO46) and the USB-JTAG pins (GPIO19/
- * GPIO20) for anything you toggle in software - a lesson learned the
- * hard way on a different board in this series when a pin that looked
- * unrelated by schematic net name turned out to double as a debug-
- * module signal and locked up the board on first toggle. GPIO4 is used
- * below because it matches the RST pin already used by Lab 07 in this
- * series and has no such conflict on this board.
+ * PIN SAFETY WARNING: do not assume a pin is free just because a
+ * schematic net name looks unrelated to this lab. An earlier version
+ * of this file drove SoC GPIO26 (labeled SD0_CLK, and this project
+ * doesn't use the SD card interface) as the reset line, and on real
+ * SR110 hardware this produced a full lockup - no serial output at
+ * all, not even the boot banner - not just "RST doesn't work." Exactly
+ * why is unconfirmed, but checking sr100_pinctrl.dtsi afterwards
+ * showed GPIO26's alternate-function group also included a Debug
+ * Module signal (dm0_clk_a) alongside sd0_clk - possibly relevant,
+ * possibly not. This file now uses GPIO4 instead, chosen specifically
+ * because its alternate-function group (gpio_4 / ciu_vsync_a /
+ * uart0_cts) has no JTAG/Debug-Module/boot-strap-sounding neighbor and
+ * isn't referenced anywhere in the base board dts by default - but
+ * this is still an unverified pin choice, not a proven-safe one.
+ * Confirm the board still boots and prints its serial banner with this
+ * pin wired and toggled before trusting it for real use. If it also
+ * causes problems, set OLED_USE_HW_RESET back to 0 and treat any
+ * further candidate pin the same way: check its full alternate-
+ * function group in sr100_pinctrl.dtsi, prefer pins not shared with
+ * JTAG/debug/SD/clock functions, and verify boot survives before
+ * wiring anything to it.
  */
 
-#define OLED_USE_HW_RESET 0 /* set to 1 only if your module has an RST
-			      * pin wired to GPIO4 below (see the file
-			      * header comment) */
+#define OLED_USE_HW_RESET 1 /* GPIO4 - see the pin choice rationale below.
+			      * Still unverified on real hardware; if the
+			      * board fails to boot/print its banner with
+			      * this pin wired, set this back to 0 and try
+			      * a different pin. */
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -98,9 +86,29 @@
 #define I2C0_NODE DT_NODELABEL(i2c0)
 
 /* Hardware reset (RES) pin, only used when OLED_USE_HW_RESET is 1.
- * &gpio0 covers SoC pins 0-31 (see the roadmap's GPIO-controller note).
+ *
+ * PIN CHOICE RATIONALE: SoC GPIO4 was chosen after the GPIO26 lockup
+ * (see the warning above) by checking sr100_pinctrl.dtsi directly
+ * rather than trusting the schematic net name alone. GPIO26's mux
+ * group also included sd0_clk *and* dm0_clk_a (a Debug Module
+ * function) - GPIO4's mux group only includes ciu_vsync_a (unused
+ * camera VSYNC) and uart0_cts (unused UART0 flow control), with no
+ * JTAG/Debug-Module/boot-strap-sounding alternate function anywhere
+ * in the group. It's also not referenced anywhere in the base board
+ * dts by default. None of this *proves* it's safe - there is no
+ * devicetree mechanism in this SoC's model to force a bare GPIO pin's
+ * mux via an overlay the way peripherals like i2c0/spi0 do with their
+ * own pinctrl-0 property, so this still relies on the SoC's reset-
+ * default mux state actually being GPIO (alternate-function 0), same
+ * as the already-working &gpioa 3 / &gpioa 25 precedents elsewhere in
+ * this project. Confirmed against the SR110 RDK schematic
+ * (SC950-C01116-01 RevE, sheet 10): broken out on J25 ("Left 20pin
+ * CONN") pin 5.
+ *
+ * Still verify boot survives with this pin wired/toggled before
+ * trusting it (see OLED_USE_HW_RESET's comment).
  */
-#define OLED_RST_GPIO_NODE DT_NODELABEL(gpio0)
+#define OLED_RST_GPIO_NODE DT_NODELABEL(gpioa)
 #define OLED_RST_PIN       4
 
 #define LCD_WIDTH  128
@@ -117,10 +125,10 @@ static const uint8_t oled_addr_candidates[] = { 0x3C, 0x3D };
 static uint8_t framebuffer[LCD_WIDTH * LCD_PAGES];
 
 /* Minimal 5x7 font - only the glyphs this lab actually prints
- * ("Hello World!" and "Addr 0x3C"/"Addr 0x3D"). Column-major,
- * bottom-to-top bit convention, same as the other raw-framebuffer labs
- * in this series (Lab 07/08) for consistency.
- */
+ * ("Hello World!" and "Addr 0x3C"/"Addr 0x3D"). Same column-major,
+ * bottom-to-top bit convention as the Nokia 5110 lab's font table, and
+ * the lowercase letters below reuse those exact values for consistency
+ * across the series. */
 struct glyph {
 	char ch;
 	uint8_t cols[5];
@@ -158,45 +166,44 @@ static const uint8_t *glyph_lookup(char c)
 
 #if OLED_USE_HW_RESET
 /* Pulses the RES pin low then high (see the file header comment for
- * why this may be required, and the pin-safety note about picking a
- * pin carefully). Uses gpio_pin_set_raw() rather than the
+ * why this is required on some modules, and the warning about picking
+ * a pin carefully). Uses gpio_pin_set_raw() rather than the
  * ACTIVE_LOW-aware gpio_pin_set(), since this pin isn't described via
  * a devicetree gpio-spec here - "raw" just means the values below are
  * the literal physical level.
  */
 static int oled_hw_reset(void)
 {
-	const struct device *gpio0 = DEVICE_DT_GET(OLED_RST_GPIO_NODE);
+	const struct device *gpioa = DEVICE_DT_GET(OLED_RST_GPIO_NODE);
 	int ret;
 
-	if (!device_is_ready(gpio0)) {
-		printk("RST GPIO controller (gpio0) not ready\n");
+	if (!device_is_ready(gpioa)) {
+		printk("RST GPIO controller (gpioa) not ready\n");
 		return -ENODEV;
 	}
 
-	ret = gpio_pin_configure(gpio0, OLED_RST_PIN, GPIO_OUTPUT_HIGH);
+	ret = gpio_pin_configure(gpioa, OLED_RST_PIN, GPIO_OUTPUT_HIGH);
 	if (ret) {
 		return ret;
 	}
 
 	k_sleep(K_MSEC(10));                       /* settle, not in reset */
-	gpio_pin_set_raw(gpio0, OLED_RST_PIN, 0);  /* assert reset (low) */
+	gpio_pin_set_raw(gpioa, OLED_RST_PIN, 0);  /* assert reset (low) */
 	k_sleep(K_MSEC(10));
-	gpio_pin_set_raw(gpio0, OLED_RST_PIN, 1);  /* release reset (high) */
+	gpio_pin_set_raw(gpioa, OLED_RST_PIN, 1);  /* release reset (high) */
 	k_sleep(K_MSEC(10));                       /* let the panel come back up */
 
 	return 0;
 }
 #endif /* OLED_USE_HW_RESET */
 
-/* Probe a single 7-bit address with a 1-byte write and no payload -
- * same style already confirmed working on ESP32-S3's I2C driver in
- * Lab 01 (bus scanner) and Lab 02 (I2C LCD).
+/* Probe a single 7-bit address with a 1-byte read (confirmed reliable
+ * on this platform's I2C driver - see Lab 01's scanner).
  */
 static bool i2c_probe_addr(const struct device *bus, uint8_t addr)
 {
-	uint8_t dummy = 0;
-	int ret = i2c_write(bus, &dummy, 1, addr);
+	uint8_t dummy;
+	int ret = i2c_read(bus, &dummy, 1, addr);
 
 	return (ret == 0);
 }
@@ -237,9 +244,26 @@ static int ssd1306_cmd(const struct device *bus, uint8_t addr, uint8_t cmd)
 	return i2c_write(bus, buf, sizeof(buf), addr);
 }
 
-/* Sends the control byte and the framebuffer as ONE I2C transaction -
- * see the file header comment for why a two-message i2c_transfer()
- * is deliberately avoided here.
+/* Sends the control byte and the payload as one I2C transaction, using
+ * the same plain i2c_write() pattern already confirmed working for
+ * ssd1306_cmd() above.
+ *
+ * An earlier version of this function used i2c_transfer() with two
+ * separate messages (control byte, then payload, with I2C_MSG_STOP
+ * only on the second) to avoid copying the 1024-byte framebuffer into
+ * a new buffer. On real SR110 hardware this produced a screen full of
+ * noise instead of the expected text - the likely explanation is that
+ * this platform's designware I2C driver inserts a STOP/restart between
+ * the two messages rather than continuing the same transaction, which
+ * would make the SSD1306 see a lone control byte, then a *second*
+ * transaction whose first byte (the first framebuffer byte) gets
+ * misread as a fresh control byte instead of pixel data - shifting
+ * everything after it by one byte and effectively randomizing which
+ * bytes are treated as commands vs. data. That matches "noise" far
+ * better than a clean off-by-one visual shift would. Copying into one
+ * contiguous buffer and sending a single i2c_write() sidesteps the
+ * question of exactly how this driver handles multi-message transfers
+ * entirely, at the cost of one extra static 1025-byte buffer.
  */
 static uint8_t oled_data_tx_buf[1 + LCD_WIDTH * LCD_PAGES];
 
@@ -358,7 +382,7 @@ int main(void)
 	const struct device *i2c0 = DEVICE_DT_GET(I2C0_NODE);
 	uint8_t oled_addr;
 
-	printk("\n=== OLED SSD1306 (I2C, ESP32-S3) ===\n");
+	printk("\n=== OLED SSD1306 (I2C, SR110) ===\n");
 
 	if (!device_is_ready(i2c0)) {
 		printk("I2C0 device not ready - check devicetree status/overlay\n");
@@ -367,30 +391,33 @@ int main(void)
 
 	/* Give the OLED's own power supply/POR circuit time to settle
 	 * before probing it. Lab 01's full 0x08-0x77 scan reaches 0x3C/
-	 * 0x3D fairly late (after already probing many other addresses),
+	 * 0x3D fairly late (after already probing ~50 other addresses),
 	 * so it incidentally gets this delay for free. This lab probes
 	 * only two addresses right at boot, so without an explicit delay
-	 * it could reach the module before it's ready to ACK on the bus.
+	 * it can reach the module before it's ready to ACK on the bus -
+	 * confirmed on real hardware to cause "not found" on a module
+	 * that Lab 01 finds just fine on the exact same wiring/power.
 	 */
 	k_sleep(K_MSEC(100));
 
 	if (!ssd1306_find_address(i2c0, &oled_addr)) {
 		printk("No SSD1306 found at 0x3C or 0x3D - check wiring/power\n");
-		printk("(this series has seen weak/missing pull-ups on this bus\n");
-		printk(" cause exactly this - try adding external 4.7k pull-ups\n");
-		printk(" on SDA/SCL to 3.3V, and/or an external 3.3V supply for\n");
-		printk(" the module, before assuming the module itself is bad)\n");
+		printk("(see this lab's doc: board-rail power has been observed\n");
+		printk(" to make I2C devices drop out on this platform - try an\n");
+		printk(" external 3.3V supply for the module before anything else)\n");
 		return 0;
 	}
 
-	/* Brief settle gap between the probe above and the write-heavy
-	 * init sequence below - cheap insurance in case the bus/controller
-	 * needs a moment between transactions. */
+	/* Brief settle gap between the read-based probe above and the
+	 * write-based init sequence below - cheap insurance in case the
+	 * bus/controller needs a moment between a read transaction and
+	 * the first write transaction that follows it.
+	 */
 	k_sleep(K_MSEC(10));
 
 #if OLED_USE_HW_RESET
 	if (oled_hw_reset()) {
-		printk("SSD1306 hardware reset failed - check RST wiring (gpio0 %d)\n",
+		printk("SSD1306 hardware reset failed - check RST wiring (gpioa %d)\n",
 		       OLED_RST_PIN);
 		return 0;
 	}

@@ -1,0 +1,74 @@
+/*
+ * Synaptics SR110 (sr100_rdk/sr100/m55): ST7789V3 1.69" 240x280 color
+ * TFT over SPI0.
+ *
+ * Write-only module (no MISO), same rationale as Labs 05/07/08 for
+ * still routing spi_mstr_miso for pinctrl-0 consistency across the
+ * SPI0 labs in this series.
+ *
+ * compatible = "zds,st7789v" is the same custom binding as the
+ * original ESP32-S3 lab (board-agnostic - see
+ * lab/dts/bindings/display/zds,st7789v.yaml), unchanged. width/
+ * height/x-offset/y-offset are panel-geometry properties, also
+ * unchanged from the ESP32-S3 version - they describe the glass, not
+ * the board.
+ *
+ * SPI0/console conflict: see 04_SPI_basics' overlay for the full
+ * explanation - console is moved to UART0's alternate pin group
+ * (uart0_tx_c/rx_c = GPIO44/GPIO45, confirmed on J24 ("Right 20pin
+ * CONN") pins 13/14). An external USB-TTL adapter is needed there to
+ * see console output.
+ *
+ * CS: native hardware CS (spi_mstr_cs pinctrl, no cs-gpios) - the same
+ * mechanism Lab 05 (SSD1306 SPI) confirmed working on real hardware
+ * using Zephyr's own in-tree display driver. An earlier version of
+ * this overlay switched to a software GPIO CS while chasing a
+ * blank-screen symptom that turned out to be unrelated to CS at all -
+ * see main.c's "SR110 PORTING HISTORY" comment.
+ *
+ * reset-gpios / dc-gpios: reuse Lab 05's exact pins (GPIO17/18, J24
+ * pins 3/4) rather than this lab's earlier GPIO27/28 choice - GPIO17/
+ * 18 are already confirmed safe (normal boot) and functionally
+ * correct (Lab 05 draws to its OLED with them) on this exact board.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+&spi0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spi_mstr_mosi &spi_mstr_miso &spi_mstr_clk &spi_mstr_cs>;
+	pinctrl-names = "default";
+
+	st7789v_disp: st7789v@0 {
+		compatible = "zds,st7789v";
+		reg = <0>;
+		spi-max-frequency = <4000000>;
+		reset-gpios = <&gpioa 17 GPIO_ACTIVE_LOW>;  /* SoC GPIO17, J24 pin 3 */
+		dc-gpios = <&gpioa 18 GPIO_ACTIVE_LOW>;    /* SoC GPIO18, J24 pin 4 - polarity flipped for test, see main.c note */
+		width = <240>;
+		height = <280>;
+		x-offset = <0>;
+		y-offset = <20>;
+	};
+};
+
+&ns16550_uart1 {
+	status = "disabled";
+};
+
+&ns16550_uart0 {
+	pinctrl-0 = <&uart0_tx_c &uart0_rx_c>;
+	pinctrl-names = "default";
+	current-speed = <230400>;
+	dlf = <2>;
+	status = "okay";
+};
+
+/ {
+	chosen {
+		zephyr,console = &ns16550_uart0;
+		zephyr,shell-uart = &ns16550_uart0;
+	};
+};

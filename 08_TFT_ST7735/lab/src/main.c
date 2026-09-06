@@ -3,9 +3,16 @@
  * subsystem - same house style as the earlier SSD1306/LCD/Nokia 5110
  * labs in this series.
  *
- * Board: ESP32-S3-DevKitC-1 (esp32s3_devkitc/esp32s3/procpu)
- * Bus:   SPI2 (GPSPI2), MOSI=GPIO13, SCLK=GPIO14, hardware CS0=GPIO15
- * Extra: RST=GPIO16 (active low), DC=GPIO17 (0=command, 1=data)
+ * Board: Synaptics SR110 (sr100_rdk/sr100/m55)
+ * Bus:   SPI0 (only SPI *master* on this SoC - spi1 is slave-only),
+ *        native hardware CS (spi_mstr_cs pinctrl, no cs-gpios) - see
+ *        the overlay for the UART console conflict this creates and
+ *        how it's worked around.
+ * Extra: RST=gpioa 17 (active low), DC=gpioa 18 (0=command, 1=data) -
+ *        J24 pins 3/4, the same pins already confirmed working by
+ *        Lab 05/06 on this exact board (deliberately reused here
+ *        rather than this lab's original GPIO13/14 - see the
+ *        overlay's comment for why).
  *
  * Like the Nokia 5110 in Lab 07, this module is write-only (no MISO
  * wired) - the overlay only needs MOSI+SCLK+CS.
@@ -132,22 +139,51 @@ static const uint8_t *glyph_lookup(char c)
     return blank;
 }
 
+/* SR110: SPI0's hardware FIFO is only 8 bytes deep (confirmed via
+ * sr100_m55.dtsi's `fifo-depth = <8>;`). A single spi_write_dt() call
+ * needing a mid-transfer TX-FIFO-refill interrupt to complete (i.e.
+ * any single call over 8 bytes) has been confirmed on real hardware
+ * to fail with -ETIMEDOUT (errno 116) instead of that refill
+ * interrupt ever firing - see Lab 06's doc for the full story. This
+ * matters here more than it first looks: the init sequence below has
+ * 16-byte gamma-correction commands (GMCTRP1/GMCTRN1) that would
+ * otherwise exceed the FIFO on their own. Every send is chunked to
+ * <= 8 bytes; native hardware CS (see the overlay) asserts/releases
+ * automatically per spi_write_dt() call, which is fine to toggle
+ * between chunks - confirmed on this hardware by Lab 05 (SSD1306 SPI).
+ */
+#define ST7735_CHUNK_BYTES 8
+
+static int st7735_send(int dc_value, const uint8_t *data, size_t len)
+{
+    int ret;
+
+    gpio_pin_set_dt(&st7735_dc, dc_value);
+
+    while (len) {
+        size_t chunk = MIN(len, ST7735_CHUNK_BYTES);
+        struct spi_buf buf = { .buf = (void *)data, .len = chunk };
+        struct spi_buf_set bufs = { .buffers = &buf, .count = 1 };
+
+        ret = spi_write_dt(&st7735_spi, &bufs);
+        if (ret) {
+            printk("  spi_write_dt(dc=%d, len=%zu) failed, ret=%d\n", dc_value, chunk, ret);
+            return ret;
+        }
+        data += chunk;
+        len -= chunk;
+    }
+    return 0;
+}
+
 static int st7735_cmd(uint8_t cmd)
 {
-    struct spi_buf buf = { .buf = &cmd, .len = 1 };
-    struct spi_buf_set bufs = { .buffers = &buf, .count = 1 };
-
-    gpio_pin_set_dt(&st7735_dc, 0); /* 0 = command */
-    return spi_write_dt(&st7735_spi, &bufs);
+    return st7735_send(0, &cmd, 1);
 }
 
 static int st7735_data(const uint8_t *data, size_t len)
 {
-    struct spi_buf buf = { .buf = (void *)data, .len = len };
-    struct spi_buf_set bufs = { .buffers = &buf, .count = 1 };
-
-    gpio_pin_set_dt(&st7735_dc, 1); /* 1 = data */
-    return spi_write_dt(&st7735_spi, &bufs);
+    return st7735_send(1, data, len);
 }
 
 /*
