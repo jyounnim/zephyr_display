@@ -13,6 +13,9 @@ This lab drives a common 16x2 HD44780-compatible character LCD sitting behind a 
 
 In other words, this isn't "I2C to the LCD" - it's **"I2C to a GPIO expander, which then bit-bangs the parallel LCD protocol behind it."**
 
+<img width="443" height="388" alt="image" src="https://github.com/user-attachments/assets/031978f4-e32f-40f9-a914-26ca43093014" />
+
+
 ## 2. Address: 0x27 vs 0x3F
 
 Depending on which expander chip is populated on the backpack, the I2C address differs.
