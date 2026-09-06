@@ -8,6 +8,9 @@
 
 이 랩은 **실기로 완전히 검증 완료**된 상태입니다.
 
+<img width="455" height="432" alt="image" src="https://github.com/user-attachments/assets/9951e8a7-8b88-4f61-a512-8d9d6d42c090" />
+
+
 ## 2. 준비물
 
 - ST7735 128x160 컬러 TFT 모듈 ("green tab" 계열, 아래 3절 참고)
