@@ -8,6 +8,9 @@ This lab connects the **exact same chip (SSD1306)** as Lab 03 (I2C mode), but th
 
 This lab has been **fully verified on real hardware**.
 
+<img width="411" height="282" alt="image" src="https://github.com/user-attachments/assets/4354501c-b178-4e85-9d22-0257906cc6ec" />
+
+
 ## 2. Requirements
 
 - A 0.96" OLED, SSD1306, **7-pin SPI module** (VCC/GND/SCK/SDA(MOSI)/RES/DC/CS)
