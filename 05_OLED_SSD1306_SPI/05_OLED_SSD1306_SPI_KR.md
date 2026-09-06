@@ -8,6 +8,9 @@
 
 이 랩은 **실기로 완전히 검증 완료**된 상태입니다.
 
+<img width="411" height="282" alt="image" src="https://github.com/user-attachments/assets/3ef0e70e-9b87-4942-a9c8-8b13a7606c63" />
+
+
 ## 2. 준비물
 
 - 0.96" OLED, SSD1306, **7핀 SPI 모듈** (VCC/GND/SCK/SDA(MOSI)/RES/DC/CS)
