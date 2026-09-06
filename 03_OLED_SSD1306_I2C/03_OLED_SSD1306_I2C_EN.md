@@ -8,6 +8,9 @@ This lab drives a 0.96" SSD1306 128x64 monochrome OLED in **I2C mode**. SSD1306 
 
 This lab doesn't use Zephyr's Display/CFB subsystem or the in-tree `solomon,ssd1306` driver - it talks to the SSD1306 with **raw I2C**, the same approach Lab 02 used for the PCF8574 LCD backpack.
 
+<img width="285" height="306" alt="image" src="https://github.com/user-attachments/assets/35db3950-ee37-47ff-b6fc-c70702fb5a0c" />
+
+
 > ℹ️ **This is a fresh implementation, separate from the earlier parked SSD1306 I2C lab** recorded in the roadmap's "parked" section. It's based on a reference implementation that reached full, real-hardware verification on a different board (Synaptics SR110), and carries over two concrete bug fixes discovered there (see sections 3 and 8 below). There's no guarantee this automatically resolves the parked lab's hardware mystery (white noise), but it ships with fixes the earlier version didn't have, so it's worth another try.
 
 ## 2. Why raw I2C instead of Zephyr's standard driver
