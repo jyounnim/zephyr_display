@@ -13,6 +13,9 @@
 
 즉 "LCD를 향한 I2C 통신"이 아니라, **"GPIO 익스팬더를 향한 I2C 통신 + 그 뒤의 병렬 LCD 프로토콜을 흉내"** 내는 구조입니다.
 
+<img width="576" height="482" alt="image" src="https://github.com/user-attachments/assets/cb50b0f9-3fa3-49b9-9e91-e79ad8e8e346" />
+
+
 ## 2. 주소: 0x27 vs 0x3F
 
 이 백팩은 어떤 익스팬더 칩이 실장되어 있느냐에 따라 I2C 주소가 다릅니다.
