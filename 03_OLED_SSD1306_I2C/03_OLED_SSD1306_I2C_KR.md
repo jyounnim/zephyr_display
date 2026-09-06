@@ -8,6 +8,9 @@
 
 이 랩은 Zephyr의 Display/CFB 서브시스템이나 in-tree `solomon,ssd1306` 드라이버를 쓰지 않고, **02번 랩(PCF8574 LCD)과 동일하게 raw I2C**로 SSD1306을 직접 제어합니다 — 그 이유는 3절에서 설명합니다.
 
+<img width="285" height="306" alt="image" src="https://github.com/user-attachments/assets/a874a571-b2f5-415a-ac37-f769c785d11e" />
+
+
 ## 2. 왜 raw I2C인가 (Zephyr 표준 드라이버를 안 쓰는 이유)
 
 Zephyr의 `solomon,ssd1306` 드라이버는 devicetree 노드에 `reg = <0x3C>;`처럼 **주소를 빌드 타임에 고정**해서 씁니다. 그런데 이 랩의 목적 자체가 "부팅 시 실제 연결된 주소를 스캔해서 자동으로 고르는 것"이라, 애초에 정적 devicetree 바인딩과는 맞지 않습니다. 그래서 05번 랩(SPI 모드 SSD1306, 고정 주소 불필요)과 달리, 이 랩은 devicetree에 SSD1306 노드를 아예 선언하지 않고 `main.c`에서 직접 I2C 명령/데이터를 씁니다.
