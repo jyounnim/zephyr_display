@@ -8,6 +8,9 @@ This is the first **color** display in this series - a **128x160 color TFT based
 
 This lab has been **fully verified on real hardware**.
 
+<img width="455" height="432" alt="image" src="https://github.com/user-attachments/assets/147a986f-9306-4508-a026-4816fd3df46d" />
+
+
 ## 2. Requirements
 
 - An ST7735 128x160 color TFT module ("green tab" variant - see section 3 below)
