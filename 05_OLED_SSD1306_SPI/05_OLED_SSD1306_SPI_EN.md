@@ -8,8 +8,14 @@ This lab connects the **exact same chip (SSD1306)** as Lab 03 (I2C mode), but th
 
 This lab has been **fully verified on real hardware**.
 
-<img width="411" height="282" alt="image" src="https://github.com/user-attachments/assets/4354501c-b178-4e85-9d22-0257906cc6ec" />
-
+> **Display spec summary**
+> | Item | Detail |
+> |---|---|
+> | Controller | Solomon Systech **SSD1306** |
+> | Resolution | 128 x 64 pixels, 1-bit (monochrome) |
+> | Typical size | 0.96" |
+> | Interface | SPI (this lab) or I2C (Lab 03) - same chip supports both |
+> | Power | Most modules generate the OLED drive voltage internally via a charge pump |
 
 ## 2. Requirements
 

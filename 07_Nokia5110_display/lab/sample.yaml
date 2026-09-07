@@ -9,7 +9,7 @@ common:
     - spi
     - display
   platform_allow:
-    - esp32s3_devkitc/esp32s3/procpu
+    - sr100_rdk/sr100/m55
   harness: console
   harness_config:
     type: one_line

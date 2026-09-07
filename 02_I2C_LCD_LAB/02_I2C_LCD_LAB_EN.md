@@ -13,8 +13,17 @@ This lab drives a common 16x2 HD44780-compatible character LCD sitting behind a 
 
 In other words, this isn't "I2C to the LCD" - it's **"I2C to a GPIO expander, which then bit-bangs the parallel LCD protocol behind it."**
 
-<img width="443" height="388" alt="image" src="https://github.com/user-attachments/assets/031978f4-e32f-40f9-a914-26ca43093014" />
+> **Display spec summary**
+> | Item | Detail |
+> |---|---|
+> | LCD controller | Hitachi **HD44780**-compatible (or a clone) |
+> | Resolution | 16 x 2 characters (character cells, not arbitrary dot graphics) |
+> | I2C expander | **PCF8574** or **PCF8574A** (only the address differs) |
+> | Interface | I2C via the backpack - a bare HD44780 alone is 4/8-bit parallel |
+> | Common name | "LCM1602 IIC", "1602 I2C LCD" |
+> | Supply voltage | Varies by module (3.3V or 5V) - see section 5 |
 
+> ⚠️ **Caution (confirmed on real hardware)**: the common **LCM1602** module needs **5V power to operate correctly**. At 3.3V, the display shows nothing or is extremely faint. See section 5 for wiring/level-shifter guidance.
 
 ## 2. Address: 0x27 vs 0x3F
 
@@ -54,6 +63,8 @@ This reuses the same I2C0 bus as Lab 01 - all external I2C wiring in this series
 
 ## 5. Power / signal-level caution (important)
 
+> ✅ **Confirmed on real hardware (LCM1602)**: the commonly-used **LCM1602 (16x2 HD44780 + PCF8574 backpack)** module needs **VCC supplied at 5V to operate correctly**. At 3.3V, only the backlight lights up with no characters at all, or characters are extremely faint - confirmed on real hardware, not something the contrast trimmer fixes. If you're using an LCM1602, skip step 1 below (trying 3.3V first) and wire it for external 5V (step 2) from the start. A level shifter on SDA/SCL turned out not to be strictly required on real hardware - see below.
+
 This backpack + LCD combination is usually **designed around 5V**:
 
 - The PCF8574's own SDA/SCL pull-up resistors are typically already on the module, tied to VCC. Supplying 5V to VCC means the I2C bus idles high at 5V.
@@ -62,11 +73,12 @@ This backpack + LCD combination is usually **designed around 5V**:
 
 **Recommended order**:
 
-1. Try running the module at 3.3V first (VCC -> the board's 3V3 pin) and adjust the contrast trimmer to see if characters become visible. Many HD44780 panels do work at 3.3V.
-2. If nothing shows up at 3.3V (or only the backlight lights up with no characters), the panel likely needs 5V. In that case:
-   - Supply VCC from the board's 5V pin.
-   - Route SDA/SCL through a **bidirectional logic-level shifter** before connecting to SR110's GPIOs.
-3. Wiring a 5V bus directly to 3.3V GPIOs "just to see if it works" is common in hobbyist projects and often survives in practice, but it is out-of-spec use - go in with that understood.
+1. **If your module isn't an LCM1602**, try running it at 3.3V first (VCC -> the board's 3V3 pin) and adjust the contrast trimmer to see if characters become visible. Many HD44780 panels do work at 3.3V.
+2. If nothing shows up at 3.3V, or only the backlight lights up with no characters (**this is the confirmed case for LCM1602**), the panel needs 5V. In that case:
+   - **Note**: the SR110 RDK's GPIO headers have no 5V pin at all (see the "Power Supply Notes" section in Lab 01's doc - the headers only expose 1.8V/3.3V). Supply VCC from a **separate external 5V source** (bench supply, USB power bank, etc.), not the board.
+   - Tie the external supply's GND to the board's GND.
+
+> ✅ **Confirmed on real hardware (works without a level shifter)**: supplying VCC from an external 5V source while wiring **SDA/SCL directly to SR110's GPIOs with no level shifter** has been confirmed to work correctly. That said, this remains **out-of-spec use of SR110's GPIOs** (rated 3.3V-only, not guaranteed for 5V input) - the PCF8574 backpack's pull-up resistors sit on VCC (5V), so the bus idles high near 5V in theory, and the GPIO tolerating that is a margin in the silicon, not a guaranteed spec. **It works right now, but this is a trade-off that leaves some long-term GPIO wear risk on the table.** Routing SDA/SCL through a bidirectional logic-level shifter remains the by-the-book, fully-rated approach if you want to eliminate that risk entirely.
 
 The lab's code/overlay behave identically regardless of which power option is chosen (power wiring isn't something software can see).
 
@@ -133,7 +145,6 @@ The LCD itself should show `Hello World!` on the first line and `SR110 Zephyr` o
 ├── 02_I2C_LCD_LAB_KR.md
 └── lab/
     ├── CMakeLists.txt
-    ├── README.rst
     ├── sample.yaml
     ├── prj.conf
     ├── boards/
@@ -141,3 +152,7 @@ The LCD itself should show `Hello World!` on the first line and `SR110 Zephyr` o
     └── src/
         └── main.c
 ```
+
+## 10. Next
+
+Lab 03 (`03_OLED_SSD1306_I2C`) connects an OLED to the same I2C0 bus - this time a pixel-addressable graphic display instead of a character LCD.

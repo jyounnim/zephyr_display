@@ -22,9 +22,11 @@
  * transaction (control byte + 1 command byte), and the whole 1024-byte
  * framebuffer as a single transaction too (control byte + 1024 data
  * bytes, copied into one contiguous static buffer and sent with one
- * i2c_write() call - see ssd1306_data()'s comment for why a two-message
- * i2c_transfer() was tried first and abandoned after it produced a
- * screen full of noise on real hardware).
+ * i2c_write() call). A two-message i2c_transfer() (control byte +
+ * framebuffer as separate messages) was tried first to avoid the
+ * buffer copy, but produced a screen full of noise on real hardware -
+ * likely an unwanted STOP inserted between messages on this I2C
+ * driver - so a single contiguous buffer is used instead.
  *
  * ADDRESS PROBING: uses a 1-byte i2c_read() per candidate address, the
  * same probe style established in Lab 01 - on this platform's I2C
@@ -46,34 +48,19 @@
  * such pin at all and don't need any of this (leave OLED_USE_HW_RESET
  * at 0 if that's your module).
  *
- * PIN SAFETY WARNING: do not assume a pin is free just because a
- * schematic net name looks unrelated to this lab. An earlier version
- * of this file drove SoC GPIO26 (labeled SD0_CLK, and this project
- * doesn't use the SD card interface) as the reset line, and on real
- * SR110 hardware this produced a full lockup - no serial output at
- * all, not even the boot banner - not just "RST doesn't work." Exactly
- * why is unconfirmed, but checking sr100_pinctrl.dtsi afterwards
- * showed GPIO26's alternate-function group also included a Debug
- * Module signal (dm0_clk_a) alongside sd0_clk - possibly relevant,
- * possibly not. This file now uses GPIO4 instead, chosen specifically
- * because its alternate-function group (gpio_4 / ciu_vsync_a /
- * uart0_cts) has no JTAG/Debug-Module/boot-strap-sounding neighbor and
- * isn't referenced anywhere in the base board dts by default - but
- * this is still an unverified pin choice, not a proven-safe one.
- * Confirm the board still boots and prints its serial banner with this
- * pin wired and toggled before trusting it for real use. If it also
- * causes problems, set OLED_USE_HW_RESET back to 0 and treat any
- * further candidate pin the same way: check its full alternate-
- * function group in sr100_pinctrl.dtsi, prefer pins not shared with
- * JTAG/debug/SD/clock functions, and verify boot survives before
- * wiring anything to it.
+ * PIN CHOICE: RES is wired to SoC GPIO4 (J25 pin 5). Don't assume a
+ * pin is safe to reuse as a plain GPIO just because its schematic net
+ * name looks unrelated to your project - check the pin's full
+ * alternate-function group in sr100_pinctrl.dtsi first. GPIO4 was
+ * chosen because its group has no JTAG/Debug-Module/boot-strap-
+ * sounding neighbor (just an unused camera VSYNC and an unused UART
+ * flow-control signal), and it's confirmed working on real hardware.
  */
 
-#define OLED_USE_HW_RESET 1 /* GPIO4 - see the pin choice rationale below.
-			      * Still unverified on real hardware; if the
-			      * board fails to boot/print its banner with
-			      * this pin wired, set this back to 0 and try
-			      * a different pin. */
+#define OLED_USE_HW_RESET 1 /* GPIO4 - confirmed working on real hardware
+			      * (see the pin choice rationale above). Leave
+			      * at 0 if your module has no RST pin at all
+			      * (the common case for cheap 4-pin modules). */
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -86,27 +73,10 @@
 #define I2C0_NODE DT_NODELABEL(i2c0)
 
 /* Hardware reset (RES) pin, only used when OLED_USE_HW_RESET is 1.
- *
- * PIN CHOICE RATIONALE: SoC GPIO4 was chosen after the GPIO26 lockup
- * (see the warning above) by checking sr100_pinctrl.dtsi directly
- * rather than trusting the schematic net name alone. GPIO26's mux
- * group also included sd0_clk *and* dm0_clk_a (a Debug Module
- * function) - GPIO4's mux group only includes ciu_vsync_a (unused
- * camera VSYNC) and uart0_cts (unused UART0 flow control), with no
- * JTAG/Debug-Module/boot-strap-sounding alternate function anywhere
- * in the group. It's also not referenced anywhere in the base board
- * dts by default. None of this *proves* it's safe - there is no
- * devicetree mechanism in this SoC's model to force a bare GPIO pin's
- * mux via an overlay the way peripherals like i2c0/spi0 do with their
- * own pinctrl-0 property, so this still relies on the SoC's reset-
- * default mux state actually being GPIO (alternate-function 0), same
- * as the already-working &gpioa 3 / &gpioa 25 precedents elsewhere in
- * this project. Confirmed against the SR110 RDK schematic
+ * SoC GPIO4, confirmed against the SR110 RDK schematic
  * (SC950-C01116-01 RevE, sheet 10): broken out on J25 ("Left 20pin
- * CONN") pin 5.
- *
- * Still verify boot survives with this pin wired/toggled before
- * trusting it (see OLED_USE_HW_RESET's comment).
+ * CONN") pin 5. See the file header comment for why this pin was
+ * chosen over other candidates.
  */
 #define OLED_RST_GPIO_NODE DT_NODELABEL(gpioa)
 #define OLED_RST_PIN       4

@@ -8,8 +8,15 @@ This is the first **color** display in this series - a **128x160 color TFT based
 
 This lab has been **fully verified on real hardware**.
 
-<img width="455" height="432" alt="image" src="https://github.com/user-attachments/assets/147a986f-9306-4508-a026-4816fd3df46d" />
-
+> **Display spec summary**
+> | Item | Detail |
+> |---|---|
+> | Controller | Sitronix **ST7735** |
+> | Resolution | 128 x 160 pixels, RGB565 (16-bit color) |
+> | Typical size | 1.8" |
+> | Interface | SPI only (write-only, no MISO) |
+> | Notable quirk | Offset varies by manufacturing batch "tab color" sticker - see section 4 |
+> | IOVCC | Typically 2.8-3.3V - confirmed working on SR110's 1.8V I/O with no level shifter |
 
 ## 2. Requirements
 

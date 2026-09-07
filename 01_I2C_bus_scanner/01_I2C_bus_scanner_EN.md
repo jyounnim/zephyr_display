@@ -1,4 +1,4 @@
-# 1. I2C Bus Scanner — Zephyr (Synaptics SR110, sr100_rdk/sr100/m55)
+# Lab 01: I2C Bus Scanner — Zephyr (Synaptics SR110, sr100_rdk/sr100/m55)
 
 > **SR110 porting note (2026-09-01)**: originally written for the ESP32-S3-DevKitC-1. The I2C concept explanations below still apply regardless of platform, but **the wiring pins, the devicetree overlay, and the probing method (read vs. write) have all changed for SR110** - the probing method in particular is the exact opposite of the ESP32-S3 version, so please re-read that section.
 
@@ -6,8 +6,8 @@ An example that scans I2C0 once from a dedicated thread at boot, finds
 every device that answers with an ACK, and prints the result as an
 `i2cdetect`-style grid. Use it to check which address a new sensor or
 display module shows up at once it's wired to the board. It's reused
-throughout the `Zephyr_display` project - in Lab 2 (OLED over I2C) and
-later in the SHARP/Nokia/ST7735 labs - as a quick wiring check.
+throughout this lab series - starting with Lab 2 (I2C LCD) and continuing
+later in the OLED/Nokia 5110/color TFT labs - as a quick wiring check.
 
 ## File Layout
 
@@ -58,10 +58,24 @@ ESP32-S3's GPIO matrix let you freely assign any GPIO number via a macro like `p
 };
 ```
 
+## Power Supply Notes (applies to this whole lab series)
+
+> ✅ **Confirmed on real hardware (2026-09-02)**: in this lab (01, I2C0 bus scanner), **powering an external I2C device from the board header's 3.3V rail caused the scanner to miss some devices.** Switching to an external power supply fixed it. So the schematic-based concern below isn't just theoretical - it's a **real, reproduced problem**. When attaching external I2C/SPI devices anywhere in this series, **try an external power supply first** rather than the board rail.
+>
+> **Further confirmed (Lab 03, 2026-09-02)**: the same root cause can also show up not as "not found in the scan" but as **an outright I2C write error once the scan has already succeeded and init commands start going out.** So a successful scan does not rule out a power problem - if writes start failing with no obvious code/wiring cause, suspect power before anything else.
+>
+> **Confirmed against the schematic** (SC950-C01116-01 RevE, sheet 2 "POWER TREE"): the SR110 RDK's 20-pin GPIO headers (J24/J25) only expose **1.8V and 3.3V rails - there is no 5V pin at all.** Each of these rails comes from a single `NCP167`-family LDO (rated up to 700mA), and that same LDO is **shared with onboard loads** - PSRAM, the GPIO expander, the camera (CSI), an M.2 WiFi/BT module, the IMU/ALS sensor, DMICs, and more. So "700mA rated" does not mean "700mA available for your external device" - as confirmed above, the actual current/voltage stability available at the header pins is more limited than it looks on paper.
+>
+> Given that:
+> - **Any external module that needs 5V (e.g. Lab 02's LCM1602) has no board pin to draw it from - always use a separate external 5V supply** (bench supply, USB power bank + cable, etc.).
+> - **Even 3.3V modules have been confirmed to drop out intermittently, or not be detected at all, when powered from the board rail.** If a scan is flaky, try switching to external power before suspecting wiring or addresses.
+> - This can get worse if you wire up several of this series' displays (Labs 05/07/08) at once from the board's own rails, or if the board has an M.2 WiFi/BT module or camera populated.
+> - Whenever you use an external supply, **always tie its GND to the board's GND** - without a shared reference, signal levels themselves become unreliable.
+
 ## How It Works
 
 1. A dedicated thread (`scan_tid`) defined with `K_THREAD_DEFINE` starts automatically at boot and runs the I2C0 scan (`main()` does nothing and returns immediately)
-2. For each address (0x08-0x77), attempts **a zero-length write** and treats the ACK as evidence the device is present
+2. For each address (0x08-0x77), attempts **a 1-byte read** and treats a successful ACK as evidence the device is present
 3. After the scan finishes, prints how many devices were found and the address map
 4. Scans once and the thread exits (no repeat)
 
@@ -151,6 +165,7 @@ Scan complete on I2C0: 1 device(s) found
 
 | Symptom | Cause / Fix |
 |---|---|
+| **Some devices drop out intermittently or aren't detected at all (confirmed on real hardware)** | Check whether the external device is powered from the board header's 3.3V rail - **switch to an external power supply and retry**. See "Power Supply Notes" above; this is more likely than a wiring or code issue |
 | `[I2C0] device not ready` | The overlay isn't actually being applied - check that the overlay filename (`sr100_rdk_sr100_m55.overlay`) matches the west board target |
 | No address shows up at all | Check SDA/SCL wiring and pull-ups, confirm `pinctrl-0` actually resolved to `i2c0_ms_scl`/`i2c0_ms_sda` via `west build -t devicetree` |
 | Specific addresses consistently missed, especially ones that used to work with a write probe | Check whether the probing method has reverted to write - SR110 requires a **1-byte read** probe (see the probing section above) |

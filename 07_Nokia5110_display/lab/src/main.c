@@ -3,9 +3,13 @@
  * Display/CFB subsystem - same house style as the earlier SSD1306/LCD
  * labs in this series.
  *
- * Board: ESP32-S3-DevKitC-1 (esp32s3_devkitc/esp32s3/procpu)
- * Bus:   SPI2 (GPSPI2), MOSI=GPIO11, SCLK=GPIO12, hardware CS0=GPIO10
- * Extra: RST=GPIO4 (active low), DC=GPIO5 (0=command, 1=data)
+ * Board: Synaptics SR110 (sr100_rdk/sr100/m55)
+ * Bus:   SPI0 (only SPI *master* on this SoC - spi1 is slave-only),
+ *        native hardware CS (spi_mstr_cs pinctrl, no cs-gpios) - see
+ *        the overlay for the UART console conflict this creates and
+ *        how it's worked around.
+ * Extra: RST=gpioa 19 (active low), DC=gpioa 20 (0=command, 1=data) -
+ *        J24 pins 5/6, confirmed against the SR110 RDK schematic.
  *
  * The Nokia 5110 module has no MISO line at all (it's a write-only
  * display), so unlike Lab 03's loopback test, this overlay only wires
@@ -33,6 +37,7 @@
 #include <zephyr/drivers/spi.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/sys/util.h>
 #include <string.h>
 
 #define PCD8544_NODE DT_NODELABEL(pcd8544)
@@ -113,22 +118,49 @@ static const uint8_t *glyph_lookup(char c)
     return blank;
 }
 
+/* SR110: SPI0's hardware FIFO is only 8 bytes deep (confirmed via
+ * sr100_m55.dtsi's `fifo-depth = <8>;`). A single spi_write_dt() call
+ * needing a mid-transfer TX-FIFO-refill interrupt to complete (i.e.
+ * any single call over 8 bytes) fails with -ETIMEDOUT (errno 116) -
+ * this bit both Lab 06 and Lab 08 before they added chunking, and
+ * this lab's pcd8544_update() sends the *entire* 504-byte framebuffer
+ * in one call, so it needs the same fix. Native hardware CS (see the
+ * overlay) asserts/releases automatically per spi_write_dt() call,
+ * which is fine to toggle between chunks - confirmed on this hardware
+ * by Lab 05 and Lab 08.
+ */
+#define PCD8544_CHUNK_BYTES 8
+
+static int pcd8544_send(int dc_value, const uint8_t *data, size_t len)
+{
+    int ret;
+
+    gpio_pin_set_dt(&pcd8544_dc, dc_value);
+
+    while (len) {
+        size_t chunk = MIN(len, PCD8544_CHUNK_BYTES);
+        struct spi_buf buf = { .buf = (void *)data, .len = chunk };
+        struct spi_buf_set bufs = { .buffers = &buf, .count = 1 };
+
+        ret = spi_write_dt(&pcd8544_spi, &bufs);
+        if (ret) {
+            printk("  spi_write_dt(dc=%d, len=%zu) failed, ret=%d\n", dc_value, chunk, ret);
+            return ret;
+        }
+        data += chunk;
+        len -= chunk;
+    }
+    return 0;
+}
+
 static int pcd8544_cmd(uint8_t cmd)
 {
-    struct spi_buf buf = { .buf = &cmd, .len = 1 };
-    struct spi_buf_set bufs = { .buffers = &buf, .count = 1 };
-
-    gpio_pin_set_dt(&pcd8544_dc, 0); /* 0 = command */
-    return spi_write_dt(&pcd8544_spi, &bufs);
+    return pcd8544_send(0, &cmd, 1);
 }
 
 static int pcd8544_data(const uint8_t *data, size_t len)
 {
-    struct spi_buf buf = { .buf = (void *)data, .len = len };
-    struct spi_buf_set bufs = { .buffers = &buf, .count = 1 };
-
-    gpio_pin_set_dt(&pcd8544_dc, 1); /* 1 = data */
-    return spi_write_dt(&pcd8544_spi, &bufs);
+    return pcd8544_send(1, data, len);
 }
 
 static int pcd8544_init(void)

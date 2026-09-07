@@ -1,0 +1,72 @@
+/*
+ * Synaptics SR110 (sr100_rdk/sr100/m55): Nokia 5110 (PCD8544) over SPI0.
+ *
+ * The module is write-only (no MISO line), but spi_mstr_miso is still
+ * routed here anyway to keep pinctrl-0 identical across every SPI0 lab
+ * in this series (04/05/07/08) - the pin is simply left unused by the
+ * PCD8544 driver, matching the same "route for consistency" convention
+ * the original ESP32-S3 overlay used.
+ *
+ * compatible = "zds,pcd8544" is the same custom binding as the original
+ * lab (board-agnostic - see lab/dts/bindings/display/zds,pcd8544.yaml),
+ * unchanged.
+ *
+ * SPI0/console conflict: see 04_SPI_basics' overlay for the full
+ * explanation - console is moved to UART0's alternate pin group
+ * (uart0_tx_c/rx_c = GPIO44/GPIO45, confirmed on J24 ("Right 20pin
+ * CONN") pins 13/14). An external USB-TTL adapter is needed there to
+ * see console output.
+ *
+ * reset-gpios / dc-gpios: use SR110's dedicated (non-muxed) gpioa
+ * controller, same rationale as Lab 05. CONFIRMED against the SR110 RDK
+ * schematic (SC950-C01116-01 RevE, sheet 10): GPIO19/20 are the SoC's
+ * I2S_DO/I2S_DI pins, unused by this lab and broken out on J24 ("Right
+ * 20pin CONN") pins 5/6 - reused here as plain RST/DC GPIOs. Using
+ * GPIO19/20 (vs. Lab 05's GPIO17/18) means both labs can be wired up
+ * on the same board at once without conflict.
+ *
+ * spi-max-frequency stays at 1 MHz, same conservative margin below the
+ * PCD8544 datasheet's ~4 MHz ceiling as the original lab.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+&spi0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spi_mstr_mosi &spi_mstr_miso &spi_mstr_clk &spi_mstr_cs>;
+	pinctrl-names = "default";
+
+	pcd8544: pcd8544@0 {
+		compatible = "zds,pcd8544";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+
+		/* Active low: physically pulled low to reset the controller.
+		 * SoC GPIO19, J24 pin 5. */
+		reset-gpios = <&gpioa 19 GPIO_ACTIVE_LOW>;
+		/* Active high: driven low for a command byte, high for data.
+		 * SoC GPIO20, J24 pin 6. */
+		dc-gpios = <&gpioa 20 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&ns16550_uart1 {
+	status = "disabled";
+};
+
+&ns16550_uart0 {
+	pinctrl-0 = <&uart0_tx_c &uart0_rx_c>;
+	pinctrl-names = "default";
+	current-speed = <230400>;
+	dlf = <2>;
+	status = "okay";
+};
+
+/ {
+	chosen {
+		zephyr,console = &ns16550_uart0;
+		zephyr,shell-uart = &ns16550_uart0;
+	};
+};

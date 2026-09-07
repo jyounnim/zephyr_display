@@ -1,8 +1,4 @@
-# 3. SPI Basics — Why There's No "SPI Scanner"
-
-> **Review note**: the original file was uploaded as `04_SPI_basics_KR.md`, but the body of the document (the "3." in the title, the `03_SPI_basics/` folder tree, section 8's "I2C scanner (Lab 1) vs. this loopback test (Lab 3)", and the closing section's "Lab 4") all consistently point to this being **Lab 3**. Renamed to `03_SPI_basics_*.md` to match, which also lines up with the Lab 01 (I2C scanner) → Lab 02 (I2C LCD) → this lab (Lab 03) sequence.
->
-> Also filled in `CMakeLists.txt` and `sample.yaml`, which were listed in the folder tree but had no content shown in the original document. The code, overlay, and custom binding were cross-checked against official Zephyr sources and left unchanged. See "Review summary" at the bottom for details.
+# Lab 04: SPI Basics — Why There's No "SPI Scanner"
 
 > **SR110 porting note (2026-09-01)**: originally written for the ESP32-S3-DevKitC-1. The I2C-vs-SPI comparison below still applies regardless of platform, but **SR110 has no ESP32-S3-style GPIO matrix, so the "map the same pin to both MOSI and MISO" software trick is impossible here** - a real jumper wire is required instead. SR110's only SPI master (SPI0) also shares its pins with the board's default console UART, which requires moving the console to a different UART pin group - see the "SPI0/console conflict" section below.
 
@@ -26,7 +22,7 @@ The original plan included an "SPI scanner," but on review, **SPI is structurall
 Split it into two separate questions.
 
 1. **Is the bus itself (SCK/MOSI/MISO wiring, SPI peripheral configuration) working?** This can be verified generically. The **loopback test** covered in this lab answers this question.
-2. **Is there actual communication with a specific chip?** This can only be verified by knowing that chip's own commands (e.g. reading a SPI flash chip's JEDEC ID, or a specific display's init sequence). Labs 5-7, where we talk to a real display, are this step.
+2. **Is there actual communication with a specific chip?** This can only be verified by knowing that chip's own commands (e.g. reading a SPI flash chip's JEDEC ID, or a specific display's init sequence). Labs 05-08, where we talk to a real display, are this step.
 
 ## What a loopback test is
 
@@ -276,7 +272,7 @@ Confirm that `Sent` and `Received` match exactly.
 ## Things to notice
 
 - Passing this test does not mean "any SPI device will now just work" - it only confirms **the bus itself (electrical signals, peripheral configuration) is sound**. Talking to a real device still requires implementing that device's own protocol correctly (which is exactly what labs 5-7 do).
-- Placing the I2C scanner (Lab 1) side by side with this loopback test (Lab 3) makes it concrete that **"these two protocols look superficially similar (clock + data), but their design philosophies are completely different"** - I2C is optimized for "discovering multiple devices on a bus," while SPI is optimized for "talking fast to a device you already know is there."
+- Placing the I2C scanner (Lab 01) side by side with this loopback test (Lab 04) makes it concrete that **"these two protocols look superficially similar (clock + data), but their design philosophies are completely different"** - I2C is optimized for "discovering multiple devices on a bus," while SPI is optimized for "talking fast to a device you already know is there."
 - Adding multiple CS lines (an array of GPIOs in the overlay's `cs-gpios`) lets you connect several SPI devices while sharing the same SCK/MOSI/MISO - use this approach in a later lab if you want to drive multiple displays at once.
 
 ## Troubleshooting
@@ -291,4 +287,4 @@ Confirm that `Sent` and `Received` match exactly.
 
 ## Next
 
-Lab 5 (`05_OLED_SSD1306_SPI`) connects a real OLED (SSD1306 in SPI mode) on top of the SPI0 bus verified here.
+Lab 05 (`05_OLED_SSD1306_SPI`) connects a real OLED (SSD1306 in SPI mode) on top of the SPI0 bus verified here.

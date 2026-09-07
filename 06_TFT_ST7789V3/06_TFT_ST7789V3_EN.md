@@ -8,6 +8,16 @@ This lab drives a 1.69" 240x280 color TFT panel based on the Sitronix **ST7789V3
 
 This lab has been **fully verified on real hardware**.
 
+> **Display spec summary**
+> | Item | Detail |
+> |---|---|
+> | Controller | Sitronix **ST7789V3** |
+> | Resolution | 240 x 280 pixels, RGB565 (16-bit color) |
+> | Typical size | 1.69" |
+> | Interface | SPI only (write-only, no MISO) |
+> | Native GRAM | 240 x 320 (the actual glass only uses part of it - see section 6) |
+> | IOVCC | 3.3V - **needs a level shifter to use with SR110's 1.8V I/O** (see section 4) |
+
 > ⚠️ **This lab requires a level shifter.** Read section 4 first - the wiring differs from this series' other SPI labs.
 
 ## 2. Requirements

@@ -1,96 +1,121 @@
-# 7. Nokia 5110 (PCD8544) Monochrome LCD — 84x48, raw SPI
+# Lab 07: Nokia 5110 (PCD8544) Monochrome LCD — 84x48, raw SPI
 
-## Overview
+## 1. Overview
 
-Board: **ESP32-S3-DevKitC-1** (`esp32s3_devkitc/esp32s3/procpu`), framework: **Zephyr RTOS**.
+Board: **Synaptics SR110** (`sr100_rdk/sr100/m55`), framework: **Zephyr RTOS**.
 
-This lab drives the classic **PCD8544-controller 84x48 monochrome LCD** ("Nokia 5110" module, named after the old Nokia phone screen it came from) over raw SPI. Same house style as the rest of this series (SSD1306, the I2C LCD, the SPI loopback lab) - no Zephyr Display/CFB subsystem, just SPI/GPIO handled directly in application code.
+This lab drives an **84x48 monochrome LCD based on the PCD8544 controller** - the "Nokia 5110" module, famous from old Nokia feature phones - over raw SPI. As with the other labs in this series, it doesn't use Zephyr's Display/CFB subsystem; the application code drives SPI/GPIO directly.
 
-This module **has no MISO line at all** (it's a write-only display) - so unlike Lab 3's loopback test, this overlay only needs MOSI/SCLK/CS.
+This module has **no MISO line at all** (a write-only display) - so unlike Lab 04 (SPI loopback), this overlay only needs MOSI/SCLK/CS.
 
-> ✅ **Hardware-verified**: confirmed working on real ESP32-S3-DevKitC-1 + Nokia 5110 hardware, with the default Vop (`0xB0`) displaying correctly as-is - no contrast tuning needed. The one real issue hit during bring-up wasn't the code or the overlay - it was **wiring**: the board was still wired for an earlier, unrelated test on different GPIOs, and that old wiring got reused without checking it against this lab's wiring table (RST=GPIO4, DC=GPIO5, CE=GPIO10, DIN=GPIO11, CLK=GPIO12). Worth remembering for the next SPI display lab: unlike I2C, SPI has no ACK/NACK (see Lab 3), so wrong wiring never shows up as a serial error - it just quietly shows nothing on screen.
+This lab has been **fully verified on real hardware**.
 
-## Requirements
+> **Display spec summary**
+> | Item | Detail |
+> |---|---|
+> | Controller | Philips (NXP) **PCD8544** |
+> | Resolution | 84 x 48 pixels, 1-bit (monochrome) |
+> | Origin | Nokia 5110/3310-era feature phone displays (early 2000s) |
+> | Interface | SPI only (write-only, no MISO) |
+> | Contrast | No physical trimmer - software Vop command only |
+
+## 2. Requirements
 
 - A Nokia 5110 (PCD8544) LCD module (typically 8 pins: RST, CE, DC, DIN, CLK, VCC, LIGHT, GND)
-- ESP32-S3-DevKitC-1
+- A Synaptics SR110 board
+- An external USB-TTL adapter to observe console output
 
-## Wiring
+## 3. Wiring
 
-| Signal | Role | ESP32-S3 connection |
+| Signal | Role | SR110 connection |
 |---|---|---|
 | VCC | Power | 3.3V |
 | GND | Ground | GND |
-| RST | Reset (active low) | GPIO4 |
-| CE (CS) | Chip select | GPIO10 (SPI2 hardware CS0) |
-| DC | Data/Command select | GPIO5 |
-| DIN (MOSI) | Data in | GPIO11 |
-| CLK (SCLK) | Clock | GPIO12 |
+| RST | Reset (active low) | gpioa 19 (SoC GPIO19, **J24 pin 5**) |
+| CE (CS) | Chip select | SPI0 CS (pin group `spi_mstr_cs`, native hardware CS) |
+| DC | Data/Command select | gpioa 20 (SoC GPIO20, **J24 pin 6**) |
+| DIN (MOSI) | Data in | SPI0 MOSI (pin group `spi_mstr_mosi`) |
+| CLK (SCLK) | Clock | SPI0 CLK (pin group `spi_mstr_clk`) |
 | LIGHT (BL) | Backlight | 3.3V or switched to GND (optional) |
 
-> **Good news on power, for once**: unlike the PCF8574 LCD backpack (Lab 02) or the SSD1306, the Nokia 5110/PCD8544 module came out of an actual Nokia phone, so its **native logic level is 2.7-3.3V**. That's a natural match for the ESP32-S3's 3.3V-only GPIOs - no level shifter or 5V concerns needed, just wire it straight up. That said, some low-cost breakout boards' onboard regulator/resistor network assumes a 5V input, so check your specific module's silkscreen/listing before feeding VCC 5V if you're tempted to. This lab is written **assuming a direct 3.3V connection**.
+> ✅ **Why GPIO19/20**: these are the SoC's I2S_DO/I2S_DI pins, unused by this lab (no I2S here), reused as plain GPIO (confirmed against the schematic, SC950-C01116-01 RevE sheet 10 - **J24 pins 5/6**). On this project, assuming a pin is safe to reuse just because it "looks unused" on the schematic has caused real problems elsewhere (some pins physically share a pad with JTAG/debug-module functions) - GPIO19/20 were chosen after confirming via `sr100_pinctrl.dtsi` that they don't overlap with any JTAG/debug-module function. They're different pins from Lab 05 (GPIO17/18, J24 pins 3/4), so both labs can be wired up on the same board without conflict.
+>
+> **SPI0/console conflict**: turning on SR110's only SPI master (SPI0) disables the board's default console (UART1, GPIO23/24, J25 pins 13/14). This lab's overlay moves the console to UART0's alternate pins (`uart0_tx_c`/`uart0_rx_c` = GPIO44/45, **J24 pins 13/14**), same as Lab 04. Connect an external USB-TTL adapter there.
+>
+> **Power note**: see Lab 01's "Power Supply Notes" section - the board header's 3.3V rail is shared with onboard components. If wiring this alongside other displays, prefer an external 3.3V supply where practical.
 
-## PCD8544 Command Set
+The Nokia 5110/PCD8544 module came out of an actual Nokia phone, so its **native logic level is 2.7-3.3V** - a natural match for SR110's 3.3V-only GPIOs, no level shifter needed. That said, some low-cost breakout boards' onboard regulator/resistor network assumes a 5V input, so check your specific module's silkscreen/listing before feeding VCC 5V. This lab is written **assuming a direct 3.3V connection**.
 
-The PCD8544 toggles between a "basic instruction set" and an "extended instruction set" while configuring.
+## 4. PCD8544 Command Set
+
+PCD8544 toggles between a "basic instruction set" and an "extended instruction set" to configure itself.
 
 | Command | Value | Meaning |
 |---|---|---|
-| Function Set (extended) | `0x21` | enter extended mode |
-| Set Vop (contrast) | `0x80 \| Vop` | set contrast - this lab defaults to `0xB0` |
-| Temperature Control | `0x04` | temperature coefficient 0 |
-| Bias System | `0x14` | bias 1:48 |
-| Function Set (basic) | `0x20` | back to basic mode |
-| Display Control | `0x0C` | normal (non-inverted) display mode |
+| Function Set (extended) | `0x21` | Enter extended mode |
+| Set Vop (contrast) | `0x80 \| Vop` | Contrast setting - this lab uses the default `0xB0` |
+| Temperature Control | `0x04` | Temperature coefficient 0 |
+| Bias System | `0x14` | 1:48 bias |
+| Function Set (basic) | `0x20` | Return to basic mode |
+| Display Control | `0x0C` | Normal (non-inverted) display mode |
 
-**The contrast (Vop) value varies a lot between modules.** The HD44780 LCD in Lab 02 had a physical trimmer you could turn by hand; the PCD8544 **has no trimmer at all - this Vop command value is the entire software contrast control**. If the screen shows nothing (too light) or comes up entirely black (too dark), adjust `PCD8544_SET_VOP_DEFAULT` in `main.c` (default `0xB0`) somewhere in the `0x80`-`0xFF` range.
+**Contrast (Vop) values vary a lot between modules.** The HD44780 LCD (Lab 02) has a physical trimmer you can turn by hand, but PCD8544 has **no trimmer - this Vop command value is the entire software-side contrast control**. If the screen shows nothing (too light) or is entirely black (too dark), adjust `main.c`'s `PCD8544_SET_VOP_DEFAULT` (default `0xB0`) somewhere in the `0x80`-`0xFF` range.
 
-## Addressing and the Framebuffer
+## 5. Addressing and the Framebuffer
 
-- The screen is 84 x 48 pixels = 84 columns x 6 pages (8 pixels tall each)
+- The screen is 84 x 48 pixels = 84 columns x 6 pages (8 pixels per page)
 - `0x80|x` sets the X (column) address, `0x40|y` sets the Y (page) address
-- After setting the address, streaming data auto-increments X, **wrapping to the next page once X reaches 84** - so the entire framebuffer (84x6 = 504 bytes) can be written starting at (0,0) in one single transfer to refresh the whole screen
+- After setting the address, streaming data auto-increments X and auto-wraps to the next page at column 84 - so the entire framebuffer (84x6 = 504 bytes) can be written starting at (0,0) in one continuous stream to refresh the whole screen
 
-## Code Structure
+## 6. Code Structure
 
-- `pcd8544_cmd()` / `pcd8544_data()`: set the DC pin to 0 (command) or 1 (data), then send via `spi_write_dt()` (CE/CS is toggled automatically by the SPI driver around each transfer)
-- `pcd8544_init()`: pulse RST, send the extended-mode commands (Vop/temperature/bias), switch back to basic mode, enable normal display
-- `framebuffer[84*6]`: holds the whole screen; `fb_draw_char`/`fb_draw_string` render a 5x7 font into it, and `pcd8544_update()` sends it all at once
-- `main()`: check SPI/GPIO readiness, initialize, print "Hello World!" / "Nokia 5110" on two lines
+- `pcd8544_send()` / `pcd8544_cmd()` / `pcd8544_data()`: set DC to 0 (command) or 1 (data), then send via `spi_write_dt()` - chunked to <= 8 bytes because **SR110's SPI0 hardware FIFO is only 8 bytes deep** (a single transfer over 8 bytes fails with `-116`/`-ETIMEDOUT`). Since this lab sends the entire 504-byte framebuffer in one logical write, it would fail every time without this chunking.
+- `pcd8544_init()`: RST pulse → extended commands (Vop/temperature/bias) → back to basic mode → normal display mode
+- `framebuffer[84*6]`: holds the whole screen; `fb_draw_char`/`fb_draw_string` fill it in with a 5x7 font, and `pcd8544_update()` sends it all at once (chunked to 8 bytes internally)
+- `main()`: confirm SPI/GPIO readiness → initialize → print "Hello World!" / "Nokia 5110" on two lines
 
-## Devicetree
+## 7. Devicetree
 
 ```dts
-&pinctrl {
-    spim2_pcd8544: spim2_pcd8544 {
-        group1 {
-            pinmux = <SPIM2_MOSI_GPIO11>, <SPIM2_SCLK_GPIO12>, <SPIM2_CSEL_GPIO10>;
-        };
-    };
-};
-
-&spi2 {
+&spi0 {
     #address-cells = <1>;
     #size-cells = <0>;
     status = "okay";
-    pinctrl-0 = <&spim2_pcd8544>;
+    pinctrl-0 = <&spi_mstr_mosi &spi_mstr_miso &spi_mstr_clk &spi_mstr_cs>;
     pinctrl-names = "default";
 
     pcd8544: pcd8544@0 {
         compatible = "zds,pcd8544";
         reg = <0>;
         spi-max-frequency = <1000000>;
-        reset-gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;
-        dc-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+        reset-gpios = <&gpioa 19 GPIO_ACTIVE_LOW>;
+        dc-gpios = <&gpioa 20 GPIO_ACTIVE_HIGH>;
+    };
+};
+
+&ns16550_uart1 {
+    status = "disabled";
+};
+
+&ns16550_uart0 {
+    pinctrl-0 = <&uart0_tx_c &uart0_rx_c>;
+    pinctrl-names = "default";
+    current-speed = <230400>;
+    dlf = <2>;
+    status = "okay";
+};
+
+/ {
+    chosen {
+        zephyr,console = &ns16550_uart0;
+        zephyr,shell-uart = &ns16550_uart0;
     };
 };
 ```
 
-The `reset-gpios`/`dc-gpios` property names deliberately match the ones Zephyr's own `mipi-dbi-spi` display binding uses - this lab doesn't use that framework (it's a custom `zds,pcd8544` binding instead), but keeping the naming convention aligned with the official binding avoids confusion if this ever gets ported to a real Zephyr display driver later.
+`reset-gpios`/`dc-gpios` match the names used by Zephyr's own `mipi-dbi-spi` display binding - this lab doesn't use that framework (it's a custom `zds,pcd8544` binding instead), but keeping the naming convention aligned with the official binding avoids confusion if this ever gets ported to a real Zephyr display driver later. `spi_mstr_miso` isn't used by this module but is included to keep pinctrl consistent with Lab 05.
 
-The GPIO controller label used is `&gpio0` - ESP32-S3's devicetree splits GPIO into two controllers, `gpio0` (pins 0-31) and `gpio1` (pins 32-53); GPIO4 and GPIO5, used here, both fall under `gpio0`.
-
-## Custom Devicetree Binding
+## 8. Custom Devicetree Binding
 
 ```yaml
 description: |
@@ -116,7 +141,7 @@ properties:
       written, high before a data byte is written.
 ```
 
-## CMakeLists.txt
+## 9. CMakeLists.txt
 
 ```cmake
 cmake_minimum_required(VERSION 3.20.0)
@@ -129,9 +154,9 @@ project(nokia5110_lab)
 target_sources(app PRIVATE src/main.c)
 ```
 
-(Same as Lab 3: since a custom binding is used, `DTS_ROOT` must be extended before `find_package(Zephyr...)`.)
+Same as Lab 04: since a custom binding is used, `DTS_ROOT` must be extended before `find_package(Zephyr...)`.
 
-## prj.conf
+## 10. prj.conf
 
 ```
 CONFIG_SPI=y
@@ -139,63 +164,70 @@ CONFIG_GPIO=y
 CONFIG_PRINTK=y
 ```
 
-(As confirmed in Lab 3, `CONFIG_ESP32_SPIM` auto-enables once the devicetree's SPI node is turned on, so it doesn't need to be added explicitly.)
-
-## File Layout
+## 11. File Layout
 
 ```
-Zephyr_display/
-└── 07_Nokia5110_display/
-    ├── lab/
-    │   ├── src/
-    │   │   └── main.c
-    │   ├── boards/
-    │   │   └── esp32s3_devkitc_esp32s3_procpu.overlay
-    │   ├── dts/
-    │   │   └── bindings/
-    │   │       └── display/
-    │   │           └── zds,pcd8544.yaml
-    │   ├── CMakeLists.txt
-    │   ├── prj.conf
-    │   └── sample.yaml
-    └── 07_Nokia5110_display_EN.md
+07_Nokia5110_display/
+├── 07_Nokia5110_display_KR.md
+├── 07_Nokia5110_display_EN.md
+└── lab/
+    ├── src/
+    │   └── main.c
+    ├── boards/
+    │   └── sr100_rdk_sr100_m55.overlay
+    ├── dts/
+    │   └── bindings/
+    │       └── display/
+    │           └── zds,pcd8544.yaml
+    ├── CMakeLists.txt
+    ├── prj.conf
+    └── sample.yaml
 ```
 
-## Build & Run
+## 12. Build & Run
+
+```powershell
+west build -p always -b sr100_rdk/sr100/m55 .\07_Nokia5110_display\lab\
+```
 
 ```bash
-west build -p always -b esp32s3_devkitc/esp32s3/procpu 07_Nokia5110_display/lab
-west flash
-west espressif monitor
+python srsdk_tools/openocd_flash.py --openocd <path to openocd> --flash-offset 0x0 \
+    --file-offset 0x0 --cfg_path srsdk_tools/Input_Config/sr100_m55.cfg \
+    --image build/zephyr/zephyr_flash.bin
 ```
 
-### Expected serial output
+The console has moved to UART0's alternate pins (`uart0_tx_c`/`uart0_rx_c` = GPIO44/45) - connect an external USB-TTL adapter to **J24 pins 13/14** and open it at **230400bps 8N1**.
+
+### Expected Serial Output
 
 ```
 Nokia 5110 (PCD8544) lab starting
 Nokia 5110 initialized and "Hello World!" / "Nokia 5110" written
 ```
 
-The screen's first page (top) should show `Hello World!`, and the second page `Nokia 5110`.
+The display should show `Hello World!` on page 1 (top) and `Nokia 5110` on page 2.
 
-## Things to Notice
+## 13. Things to Notice
 
-- **The Vop (contrast) value is the part of this lab most likely to need tuning** - since there's no physical trimmer, before suspecting the wiring if the screen looks blank, try a few different `PCD8544_SET_VOP_DEFAULT` values first.
-- Being a write-only display with no MISO line makes a nice contrast with Lab 3 (SPI loopback) - that lab verified "the bus itself is sound," and this one builds a real device's command protocol on top of that assumption.
-- Matching property names to Zephyr's own official bindings (`reset-gpios`/`dc-gpios`) means this devicetree can largely be reused as-is if this custom driver is ever swapped out for a real Zephyr Display driver later.
+- **Vop (contrast) is the setting most likely to need adjusting in this lab** - with no physical trimmer, if the screen looks blank, try a few different `PCD8544_SET_VOP_DEFAULT` values before suspecting the wiring.
+- Being a write-only display with no MISO line makes a nice contrast with Lab 04 (SPI loopback) - that lab verified "the bus itself is sound," and this one builds a real device's command protocol on top of that assumption.
+- Matching `reset-gpios`/`dc-gpios` naming to the official Zephyr binding means the devicetree can be reused almost as-is if this custom driver is ever swapped for a real Zephyr display driver later.
 
-## Troubleshooting
+## 14. Troubleshooting
 
 | Symptom | Cause / Fix |
 |---|---|
 | `SPI device not ready` / `RST/DC GPIO not ready` | The overlay isn't applied - check that the filename matches the board target |
-| Screen stays completely blank/white | Vop too low (not enough contrast) - try raising `PCD8544_SET_VOP_DEFAULT` from `0xB0` (e.g. `0xB8`, `0xC0`) |
-| Screen goes fully black / a checkerboard pattern | Vop too high (too much contrast) - try lowering the value, or check that the RST sequence completed correctly |
-| Serial shows an init failure / SPI write error | Re-check the wiring (especially CE/CS, DIN/MOSI, CLK). Run `west build -t devicetree` to confirm the `&spi2` node merged correctly |
+| Screen is entirely blank/white | Vop too low (not enough contrast) - try raising `PCD8544_SET_VOP_DEFAULT` from `0xB0` (e.g. `0xB8`, `0xC0`) |
+| Screen is entirely black / checkerboard pattern | Vop too high (too much contrast) - try lowering it, or check whether the RST sequence completed correctly |
+| Serial shows an init failure / SPI write error | Re-check the wiring (especially CE/CS, DIN/MOSI, CLK). If powered from the board rail, switch to external 3.3V and retry |
+| `spi_write_dt(...) failed, ret=-116` | SPI0's 8-byte FIFO limit - confirm `PCD8544_CHUNK_BYTES` is 8 or less (already the case) |
 | Characters are garbled or in the wrong place | Check the 6-pixel spacing logic in `fb_draw_string`, and that the page argument is within 0-5 |
-| Build error (can't find `SPIM2_MOSI_GPIO11` etc.) | Same issue as Labs 1 and 3 - use `west build -t devicetree` to see which pinmux macros are actually available |
+| No console output at all | Confirm the external USB-TTL adapter is on **J24 pins 13/14** - the board's default console (J25 pins 13/14) dies once SPI0 is enabled |
 | `'zds,pcd8544' compatible not found` | Check that `CMakeLists.txt`'s `list(APPEND DTS_ROOT ...)` comes before `find_package(Zephyr...)` |
 
-## Next
+**Lab 07 fully verified** - the SPI0 bus, RST/DC (GPIO19/20), and SPI0's 8-byte FIFO chunking have all been confirmed on real hardware.
 
-Later labs can extend this same raw-SPI-plus-custom-binding pattern to other display controllers - a SHARP memory LCD, an ST7735 color TFT, and so on.
+## 15. Next
+
+Lab 08 (`08_TFT_ST7735`) moves to a color TFT - reusing this lab's raw SPI + custom binding pattern, plus a color-specific verification technique (color bars).
