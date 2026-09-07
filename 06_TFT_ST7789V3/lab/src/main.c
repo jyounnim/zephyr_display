@@ -5,35 +5,38 @@
  * Board: Synaptics SR110 (sr100_rdk/sr100/m55)
  * Bus:   SPI0 (only SPI *master* on this SoC - spi1 is slave-only),
  *        native hardware CS (spi_mstr_cs pinctrl, no cs-gpios) - the
- *        same CS mechanism confirmed working on real hardware by
- *        Lab 05 (SSD1306 SPI, using Zephyr's own in-tree display
- *        driver). See the devicetree overlay for the UART console
- *        conflict this creates (SPI0 shares pads with UART0/UART1's
- *        default pins on this board) and how it's worked around.
+ *        same mechanism Labs 05/08 already confirmed working. See the
+ *        devicetree overlay for the UART console conflict this
+ *        creates (SPI0 shares pads with UART0/UART1's default pins on
+ *        this board) and how it's worked around.
  *
  * This lab talks to the ST7789V3 controller directly with raw SPI
  * writes (command/data selected via the DC pin), the same style used
  * throughout this series for SPI displays, rather than going through
  * Zephyr's built-in "sitronix,st7789v" display driver.
  *
- * SR110 PORTING HISTORY: an earlier version of this file chased a
- * blank-screen symptom through several dead ends - software
- * (GPIO-based) CS, manually holding CS low across an entire RAMWR
- * burst, forcing spi_transceive_dt() (TX+RX) instead of spi_write_dt()
- * (TX-only) - none of which were the actual problem. Lab 05 succeeding
- * with plain native CS and ordinary per-call SPI writes (via Zephyr's
- * own SSD1306 driver) on the exact same SPI0 bus showed that none of
- * that machinery was necessary. This version drops all of it and
- * reuses Lab 05's proven-working RST/DC pins (GPIO17/18) instead of
- * this lab's earlier, still-unverified GPIO27/28/29/4 choices.
+ * ⚠️ REQUIRES A LEVEL SHIFTER: see the devicetree overlay's comment
+ * for the full explanation - SR110's SPI0/GPIO pads are a 1.8V I/O
+ * domain, and this particular module's IOVCC is 3.3V. Driving it
+ * directly produces a persistent black screen with no SPI-level
+ * error. A bidirectional level shifter (confirmed working: TXS0108E)
+ * on SCLK/MOSI/CS/RST/DC fixes it - but see the overlay comment about
+ * TXS0108E's clock-speed limitations if you build your own.
  *
- * The one genuinely hardware-confirmed fix that remains: SR110's SPI0
- * hardware FIFO is only 8 bytes deep (`fifo-depth = <8>;` in
- * sr100_m55.dtsi), and a single spi_write_dt() call needing a
- * mid-transfer TX-FIFO-refill interrupt to complete (i.e. any single
- * call over 8 bytes) reproducibly times out (-ETIMEDOUT / errno 116)
- * instead of that refill interrupt ever firing. Every send below is
- * chunked to <= 8 bytes to avoid ever needing that refill.
+ * SPI0 FIFO: SR110's SPI0 hardware FIFO is only 8 bytes deep
+ * (`fifo-depth = <8>;` in sr100_m55.dtsi), and a single spi_write_dt()
+ * call needing a mid-transfer TX-FIFO-refill interrupt to complete
+ * (i.e. any single call over 8 bytes) reproducibly times out
+ * (-ETIMEDOUT / errno 116) instead of that refill interrupt ever
+ * firing. Every send below is chunked to <= 8 bytes to avoid ever
+ * needing that refill.
+ *
+ * INIT SEQUENCE: uses a full power/frame-rate/gamma init sequence
+ * (porch control, gate control, VCOM, power control, gamma
+ * correction) rather than the bare MIPI-DCS minimum, cross-checked
+ * against ESPHome's st7789v component, Bodmer's TFT_eSPI library, and
+ * Adafruit's Raspberry Pi fbtft driver, which all agree on this
+ * sequence/these values.
  *
  * PANEL RAM OFFSET: the ST7789 controller's native GRAM is 240x320.
  * This particular module's visible glass is only 240x280, centered
@@ -48,24 +51,7 @@
  * COLOR ORDER / ORIENTATION: MADCTL below is set to a common default.
  * If colors come out with red/blue swapped, or the image is mirrored/
  * rotated relative to how your module is mounted, see the
- * troubleshooting doc for the MADCTL bits to flip.
- */
-
-/*
- * SR110 DEBUG STEP (2026-09-03): comprehensive init sequence (matching
- * Lab 08's approach) still didn't produce a visible image - screen
- * stays black, log completes with no error, same as every previous
- * attempt. Since SPI0/CS/pins/chunking are all independently proven
- * working (Lab 05, Lab 08), the next untested hypothesis is DC
- * polarity: if this specific module's DC line is wired/expects the
- * opposite sense from the conventional "low=command, high=data" (some
- * clone boards do), every command byte would land in the panel's data
- * path and vice versa - the panel would never see a valid SWRESET/
- * DISPON, explaining a permanently-black screen with no bus-level
- * error. The overlay's dc-gpios flag has been flipped to
- * GPIO_ACTIVE_LOW to test this without any code or wiring change -
- * gpio_pin_set_dt() below still calls with the same 0=command/1=data
- * values, but the physical HIGH/LOW meaning is now inverted.
+ * troubleshooting section of the doc for the MADCTL bits to flip.
  */
 
 #include <zephyr/kernel.h>

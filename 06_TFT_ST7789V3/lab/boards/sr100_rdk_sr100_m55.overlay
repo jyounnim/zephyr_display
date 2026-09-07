@@ -20,16 +20,41 @@
  * see console output.
  *
  * CS: native hardware CS (spi_mstr_cs pinctrl, no cs-gpios) - the same
- * mechanism Lab 05 (SSD1306 SPI) confirmed working on real hardware
- * using Zephyr's own in-tree display driver. An earlier version of
- * this overlay switched to a software GPIO CS while chasing a
- * blank-screen symptom that turned out to be unrelated to CS at all -
- * see main.c's "SR110 PORTING HISTORY" comment.
+ * mechanism Lab 05/08 already confirmed working on real hardware.
  *
- * reset-gpios / dc-gpios: reuse Lab 05's exact pins (GPIO17/18, J24
- * pins 3/4) rather than this lab's earlier GPIO27/28 choice - GPIO17/
- * 18 are already confirmed safe (normal boot) and functionally
- * correct (Lab 05 draws to its OLED with them) on this exact board.
+ * reset-gpios / dc-gpios: reuse Lab 05/08's exact pins (GPIO17/18, J24
+ * pins 3/4).
+ *
+ * ⚠️ LEVEL SHIFTER REQUIRED: SR110's SPI0/GPIO pads are a 1.8V I/O
+ * domain (confirmed against the SR110 RDK schematic, SC950-C01116-01
+ * RevE - SPI_MSTR_CLK and neighboring pins are explicitly tied to
+ * SR110_VDDIO1P8). This particular ST7789V3 module's IOVCC is 3.3V,
+ * whose datasheet-specified input-high threshold (VIH = 0.7 x IOVCC =
+ * 2.31V) SR110's 1.8V output does not reach. Driving this module
+ * directly produced a persistent black screen with no SPI-level error
+ * on every software variation tried (CS type, chunking, DC polarity,
+ * init sequence depth) - the SPI bus mechanics all completed
+ * correctly, but the panel was never actually recognizing the logic
+ * levels as valid highs. A bidirectional level shifter (confirmed
+ * working: TXS0108E) on all five signals - SCLK, MOSI, CS, RST, DC -
+ * resolved it. Two things worth knowing if you build this yourself:
+ *   1. TXS0108E is an auto-direction-sensing shifter, not really
+ *      designed for a continuously-toggling unidirectional signal
+ *      like SPI SCLK - it can be unreliable above roughly 1-2MHz
+ *      depending on wiring/parasitic capacitance. A dedicated
+ *      unidirectional buffer (74LVC245, 74AHCT125, etc.) is the more
+ *      correct choice for SCLK/MOSI/CS/RST/DC, since all five are
+ *      SR110-to-display only - but TXS0108E does work if you keep
+ *      spi-max-frequency conservative (this lab uses 4MHz - lower it
+ *      if you see the same symptoms again with your own shifter/wiring).
+ *   2. Every other SPI0 signal in this project shares the same 1.8V
+ *      domain. Labs 05 (SSD1306) and 08 (ST7735) both work correctly
+ *      without a level shifter, so 1.8V is evidently within those
+ *      controllers' real-world tolerance even though it's below a
+ *      textbook 3.3V-IOVCC VIH threshold - silicon margin varies
+ *      between parts, so don't assume any given 3.3V-rated SPI display
+ *      will tolerate 1.8V drive; verify on real hardware, and add a
+ *      level shifter as the default safe choice if unsure.
  */
 
 #include <zephyr/dt-bindings/gpio/gpio.h>
@@ -45,8 +70,8 @@
 		compatible = "zds,st7789v";
 		reg = <0>;
 		spi-max-frequency = <4000000>;
-		reset-gpios = <&gpioa 17 GPIO_ACTIVE_LOW>;  /* SoC GPIO17, J24 pin 3 */
-		dc-gpios = <&gpioa 18 GPIO_ACTIVE_LOW>;    /* SoC GPIO18, J24 pin 4 - polarity flipped for test, see main.c note */
+		reset-gpios = <&gpioa 17 GPIO_ACTIVE_LOW>;  /* SoC GPIO17, J24 pin 3 - through level shifter */
+		dc-gpios = <&gpioa 18 GPIO_ACTIVE_HIGH>;    /* SoC GPIO18, J24 pin 4 - through level shifter */
 		width = <240>;
 		height = <280>;
 		x-offset = <0>;
